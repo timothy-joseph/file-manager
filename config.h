@@ -24,5 +24,7 @@ static Key keys[] = {
 	{'c',            normrename,            {0}      },
 	{'b',            brename,               {0}      },
 	{'-',            directoriesfirst,      {0}      },
-	{'/',            search,                {0}      }
+	{'/',            search,                {.i = 0} },
+	{'n',            search,                {.i = +1}},
+	{'N',            search,                {.i = -1}}
 };

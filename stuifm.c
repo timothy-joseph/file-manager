@@ -83,7 +83,7 @@ static Node *curent = NULL; /* the file that the cursor is placed on */
 static Node *topofscreen = NULL;
 
 static int  maxy, maxx, sortbydirectories = 0, numoffiles = 0;
-static char status[MAX_NAME];
+static char status[MAX_NAME], pattern[MAX_PATH];
 
 /* config.h */
 #include "config.h"
@@ -235,8 +235,11 @@ rdrwf(void) /* (r)e(dr)a(w) (f)unction */
 
 	mvprintw(maxy-1, maxx-digitspos-2-digitsfiles, "%d/%d", posinfiles, numoffiles);
 
+	/* print the curent working directory */
+	mvprintw(maxy-1, maxx-digitspos-3-digitsfiles-strlen(cwd), cwd);
+
 	/* print the status */
-	mvprintw(maxy-1, 0, "%.*s", maxx-digitspos-3-digitsfiles, status);
+	mvprintw(maxy-1, 0, "%.*s", maxx-digitspos-4-digitsfiles-strlen(cwd), status);
 }
 
 void
@@ -329,40 +332,108 @@ search(const Arg *arg)
 	/* search through the ll until i find a element that starts with that
 	 * then redraw the page starting with that element
 	 */
-	Node *tmp = curent;
-	char pattern[MAX_PATH];
+	Node *tmp = curent, *dirlistend = NULL;
 	regex_t regex;
-	int reti;
+	int reti, oktofree = 0;
 
-	/* endwin */
-	endwin();
+	switch (arg->i) {
+	case 0: endwin();
 
-	/* get pattern into normal string */
-	printf("search: ");
-	fgets(pattern, MAX_PATH, stdin);
-	if (pattern[strlen(pattern)-1] == '\n') pattern[strlen(pattern)-1] = 0;
+		    printf("search: ");
+		    fgets(pattern, MAX_PATH, stdin);
+		    if (pattern[strlen(pattern)-1] == '\n') pattern[strlen(pattern)-1] = 0;
 
-	/* get pattern into regex */
-	reti = regcomp(&regex, pattern, 0);
-	if (reti) return;
+		    strncpy(status, "searched with new pattern", MAX_NAME);
 
-	while (tmp != NULL) {
-		reti = regexec(&regex, tmp->name, 0, NULL, 0);
-		if (!reti) break;
-		tmp = tmp->next;
+			if (pattern[0] != 0) {
+				reti = regcomp(&regex, pattern, 0);
+		     	if (reti) return;
+				oktofree = 1;
+			} else {
+		    	strncpy(status, "please input a pattern", MAX_NAME);
+				initialization();
+			 	return;
+			}
+			/* FALLTHROUGH */
+
+	case 1: if (!oktofree && pattern[0] != 0) {
+				reti = regcomp(&regex, pattern, 0);
+		     	if (reti) return;
+				oktofree = 1;
+			 } else if (!oktofree) {
+		    	strncpy(status, "please input a pattern", MAX_NAME);
+			 	return;
+			 }
+
+			 if (arg->i == 1) tmp = tmp->next; /* so it doesn't detect the same element if we want the next one
+			 									* but in case we search with a new pattern, we want it to match the curent
+												* position if it matches
+			 									*/
+
+			 while (tmp != NULL) {
+			 	reti = regexec(&regex, tmp->name, 0, NULL, 0);
+			 	if (!reti) break;
+			 	tmp = tmp->next;
+			 }
+
+			 if (tmp == NULL) {
+			 	tmp = dirlist;
+		     	strncpy(status, "search reached BOTTOM, starting from the TOP", MAX_NAME);
+
+			 	while (tmp != NULL) {
+			 		reti = regexec(&regex, tmp->name, 0, NULL, 0);
+			 		if (!reti) break;
+			 		tmp = tmp->next;
+			 	}
+			 }
+			 break;
+	
+	case -1: if (pattern[0] != 0) {
+				reti = regcomp(&regex, pattern, 0);
+		     	if (reti) return;
+				oktofree = 1;
+			 } else {
+		    	strncpy(status, "please input a pattern", MAX_NAME);
+			 	return;
+			 }
+
+			 tmp = tmp->prev;
+			 while (tmp != NULL) {
+				reti = regexec(&regex, tmp->name, 0, NULL, 0);
+				if (!reti) break;
+				tmp = tmp->prev;
+			 }
+
+			 if (tmp == NULL) {
+				tmp = dirlist;
+		    	strncpy(status, "search reached TOP, starting from the BOTTOM", MAX_NAME);
+
+				while (tmp) {
+					dirlistend = tmp;
+					tmp = tmp->next;
+				}
+				tmp = dirlistend;
+
+				while (tmp != NULL) {
+					reti = regexec(&regex, tmp->name, 0, NULL, 0);
+					if (!reti) break;
+					tmp = tmp->prev;
+			 	}
+			 }
+			 break;
 	}
 
-	regfree(&regex);
+	if (oktofree) {
+		regfree(&regex);
+	}
 
-	/* just in case we haven't found anything, go back to where the user left the cursor */
-	if (tmp == NULL)
+	if (tmp == NULL) {
+		strncpy(status, "no item with that pattern was found", MAX_NAME);
 		tmp = curent;
+	}
 
-	/* reinit */
 	initialization();
-	getcurentfiles();
 	curent = tmp;
-	strncpy(status, "searched", MAX_NAME);
 }
 
 void
