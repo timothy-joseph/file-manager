@@ -15,20 +15,22 @@
 
 #define LENGTH(X) (sizeof(X) / sizeof(X[0]))
 #define PRINTW(X, STR, ISSEL, ISDIR) if ((ISSEL)) addch('>'); \
-						  			 for (int j = 1; j <= maxx/2-strlen((STR))-(!!ISSEL); j++) { \
-						  			     addch(' '); \
-						  			 } \
-						  			 attron(COLOR_PAIR((X))); /* colour - colour pair X */ \
-						  			 if ((ISDIR)) printw("%s/\n", (STR)); \
-						  			 else printw("%s\n", (STR)); \
-						  			 attroff(COLOR_PAIR((X))); \
+                                     for (int j = 1; j <= maxx/2-strlen((STR))-(!!ISSEL); j++) { \
+                                         addch(' '); \
+                                     } \
+                                     attron(COLOR_PAIR((X))); /* colour - colour pair X */ \
+                                     if ((ISDIR)) printw("%s/\n", (STR)); \
+                                     else printw("%s\n", (STR)); \
+                                     attroff(COLOR_PAIR((X))); \
 
 #define NUMOFDIGITS(RET, NUM, VAR) VAR = (NUM); \
-								   RET = 0; \
-								   while (VAR) { \
-							           VAR /= 10; \
-									   RET++; \
-							       } \
+                                   RET = 0; \
+                                   while (VAR) { \
+                                       VAR /= 10; \
+                                       RET++; \
+                                   } \
+								   if (RET == 0) RET = 1; \
+
 
 #define VERSION "1.0"
 
@@ -56,25 +58,30 @@ struct Key {
 /* function declarations */
 static void initialization(void);
 static void getcurentfiles(void);
+static void append_ll(Node **head, char *path, char *name);
+static void free_ll(Node **head);
+static void rmvselection(char *path, char *name);
+static int  isselected(char *path, char *name);
+static void resizedetected(void);
 static void rdrwf(void);
 static void loop(void);
 static void cleanup(void);
 static void movev(const Arg *arg);
 static void moveh(const Arg *arg);
-static void search(const Arg *arg);
-static void append_ll(Node **head, char *path, char *name);
-static void free_ll(Node **head);
+static void first(const Arg *arg);
+static void last(const Arg *arg);
+void topofscreenscroll(const Arg *arg);
 static void selection(const Arg *arg);
 static void clearselection (const Arg *arg);
-static void rmvselection(char *path, char *name);
-static int  isselected(char *path, char *name);
-static void movefiles(const Arg *arg);
+static void selectionmanager(const Arg *arg);
+static void directoriesfirst(const Arg *arg);
+static void hiddenfilesswitch(const Arg *arg);
 static void copyfiles(const Arg *arg);
+static void movefiles(const Arg *arg);
+static void trashput(const Arg *arg);
 static void normrename(const Arg *arg);
 static void brename(const Arg *arg);
-static void directoriesfirst(const Arg *arg);
-static void selectionmanager(const Arg *arg);
-static void resizedetected(void);
+static void search(const Arg *arg);
 
 /* global variables */
 static Node *selhead = NULL;
@@ -82,7 +89,7 @@ static Node *dirlist = NULL;
 static Node *curent = NULL; /* the file that the cursor is placed on */
 static Node *topofscreen = NULL;
 
-static int  maxy, maxx, sortbydirectories = 0, numoffiles = 0;
+static int  maxy, maxx, sortbydirectories = 0, hiddenfiles = 0, mode = 0;
 static char status[MAX_NAME], pattern[MAX_PATH];
 
 /* config.h */
@@ -92,6 +99,8 @@ static char status[MAX_NAME], pattern[MAX_PATH];
 void
 initialization(void)
 {
+	sortbydirectories = DIRECTORIESFIRST;
+	hiddenfiles = HIDDENFILES;
 	initscr();
 	cbreak();
 	noecho();
@@ -128,15 +137,17 @@ getcurentfiles(void)
 			stat(namelist[i]->d_name, &pathstat);
 			if (S_ISREG(pathstat.st_mode) && \
 					strcmp(namelist[i]->d_name, ".") != 0 && \
-					strcmp(namelist[i]->d_name, "..") != 0)
+					strcmp(namelist[i]->d_name, "..") != 0 && \
+					(hiddenfiles == 0 ? namelist[i]->d_name[0] != '.' : 1))
 				append_ll(&dirlist, cwd, namelist[i]->d_name);
 		}
-		/* then put all other files */
+		/* then put all directories except . and .. */
 		for (i = lendir-1; i >= 0; i--) {
 			stat(namelist[i]->d_name, &pathstat);
 			if (!S_ISREG(pathstat.st_mode) && \
 					strcmp(namelist[i]->d_name, ".") != 0 && \
-					strcmp(namelist[i]->d_name, "..") != 0)
+					strcmp(namelist[i]->d_name, "..") != 0 && \
+					(hiddenfiles == 0? namelist[i]->d_name[0] != '.' : 1))
 				append_ll(&dirlist, cwd, namelist[i]->d_name);
 		}
 		/* then free each element in namelist */
@@ -145,341 +156,16 @@ getcurentfiles(void)
 		}
 	} else {
 		for (i = lendir-1; i >= 0; i--) {
-			/* insert into ll */
-			if (strcmp(namelist[i]->d_name, ".") != 0 &&
-					strcmp(namelist[i]->d_name, ".."))
+			if (strcmp(namelist[i]->d_name, ".") != 0 && \
+					strcmp(namelist[i]->d_name, "..") && \
+					(hiddenfiles == 0 ? namelist[i]->d_name[0] != '.' : 1))
 				append_ll(&dirlist, cwd, namelist[i]->d_name);
-			/* free element at i */
 			free(namelist[i]);
 		}
 	}
 	topofscreen = dirlist;
 	curent = dirlist;
-	/* free whole namelist */
 	free(namelist);
-	/* draw */
-	// rdrwf();
-}
-
-void
-rdrwf(void) /* (r)e(dr)a(w) (f)unction */
-{
-	struct stat pathstat;
-	char cwd[MAX_PATH];
-	getcwd(cwd, sizeof(cwd));
-	int i, curentonscreen = 0, pos = 0, numoffiles = 0, posinfiles = 0, digitsfiles, digitspos, t1;
-	Node *tmp = topofscreen;
-
-	/* display */
-	i = 0;
-
-	clear();
-	while (tmp != NULL && i < maxy-3) {
-		/* decision on wheter the element is a directory and if it is selected */
-		stat(tmp->name, &pathstat);
-		if (!S_ISREG(pathstat.st_mode)) {
-			if (isselected(cwd, tmp->name)) {
-				PRINTW(4, tmp->name, 1, 1);
-			} else {
-				PRINTW(3, tmp->name, 0, 1);
-			}
-		} else {
-			if (isselected(cwd, tmp->name)) {
-				PRINTW(2, tmp->name, 1, 0);
-			} else {
-				PRINTW(1, tmp->name, 0, 0);
-			}
-		}
-
-		if (tmp == curent) {
-			/* TODO: add color for current */
-			curentonscreen = 1;
-			pos = i;
-		}
-
-		tmp = tmp->next;
-		i++;
-	}
-
-	if (i == 0 || dirlist == NULL) {
-		PRINTW(5, "NO FILES IN CURRENT DIRECTORY", 0, 0);
-		curentonscreen = 1; /* to stop a possible infinite loop */
-	}
-	
-	if (!curentonscreen) {
-		topofscreen = curent;
-		rdrwf();
-	}
-	/* finally add the cursor */
-	mvaddch(pos, maxx/2+2, '<');
-
-	/* print a line to separate files from the status */
-	for (i = 0; i < maxx; i++) {
-		mvaddch(maxy-2, i, '-');
-	}
-
-	/* print the number of files and what number is the current file */
-	numoffiles = 0;
-	posinfiles = 0;
-	tmp = dirlist;
-	while (tmp) {
-		numoffiles++;
-		if (tmp == curent) {
-			posinfiles = numoffiles;
-		}
-		tmp = tmp->next;
-	}
-
-	NUMOFDIGITS(digitsfiles, numoffiles, t1);
-	NUMOFDIGITS(digitspos, posinfiles, t1);
-
-	mvprintw(maxy-1, maxx-digitspos-2-digitsfiles, "%d/%d", posinfiles, numoffiles);
-
-	/* print the curent working directory */
-	mvprintw(maxy-1, maxx-digitspos-3-digitsfiles-strlen(cwd), cwd);
-
-	/* print the status */
-	mvprintw(maxy-1, 0, "%.*s", maxx-digitspos-4-digitsfiles-strlen(cwd), status);
-}
-
-void
-loop(void)
-{
-	int c, i;
-	rdrwf();
-	while ((c = getch()) != QUIT_CHAR) {
-		if (c == KEY_RESIZE) {
-			resizedetected();
-			continue;
-		}
-
-		status[0] = 0;
-		for (i = 0; i < LENGTH(keys); i++)
-			if (keys[i].chr == c)
-				keys[i].func(&keys[i].arg);
-		rdrwf();
-	}
-}
-
-void
-cleanup(void)
-{
-	/* free any allocated memory */
-	free_ll(&dirlist);
-	free_ll(&selhead);
-	/* close curses session */
-	clear();
-	endwin();
-	/* output the curent directory */
-	FILE *fp = NULL;
-	if ((fp = fopen(VCD_PATH, "w+")) == NULL)
-		return;
-
-	char cwd[MAX_PATH];
-	if (getcwd(cwd, sizeof(cwd)) != NULL) {
-		printf("%s\n", cwd);
-		fprintf(fp, "%s\n", cwd);
-	}
-	
-	fclose(fp);
-}
-
-void
-movev(const Arg *arg)
-{
-	if (!arg)
-		return;
-
-	int i = arg->i, rdrw = 0, j = 0;
-	Node *tmp = NULL;
-
-	/* decide if we should go forward or backwards */
-	if (i == 1)
-		tmp = curent->next;
-	else if (i == -1)
-		tmp = curent->prev;
-
-	if (tmp == NULL)
-		return;
-	
-	curent = tmp;
-}
-
-void
-moveh(const Arg *arg)
-{
-	if (!arg) /* arg == NULL */
-		return;
-	
-	if (arg->i == -1) {
-		chdir("..");
-	} else {
-		/* see if it is file or directory and act accordingly */
-		struct stat pathstat;
-		stat(curent->name, &pathstat);
-
-		if (!S_ISREG(pathstat.st_mode))
-			chdir(curent->name);
-	}
-
-	getcurentfiles();
-	strncpy(status, "changed directory", MAX_NAME);
-}
-
-void
-search(const Arg *arg)
-{
-	/* search through the ll until i find a element that starts with that
-	 * then redraw the page starting with that element
-	 */
-	Node *tmp = curent, *dirlistend = NULL;
-	regex_t regex;
-	int reti, oktofree = 0;
-
-	switch (arg->i) {
-	case 0: endwin();
-
-		    printf("search: ");
-		    fgets(pattern, MAX_PATH, stdin);
-		    if (pattern[strlen(pattern)-1] == '\n') pattern[strlen(pattern)-1] = 0;
-
-		    strncpy(status, "searched with new pattern", MAX_NAME);
-
-			if (pattern[0] != 0) {
-				reti = regcomp(&regex, pattern, 0);
-		     	if (reti) return;
-				oktofree = 1;
-			} else {
-		    	strncpy(status, "please input a pattern", MAX_NAME);
-				initialization();
-			 	return;
-			}
-			/* FALLTHROUGH */
-
-	case 1: if (!oktofree && pattern[0] != 0) {
-				reti = regcomp(&regex, pattern, 0);
-		     	if (reti) return;
-				oktofree = 1;
-			 } else if (!oktofree) {
-		    	strncpy(status, "please input a pattern", MAX_NAME);
-			 	return;
-			 }
-
-			 if (arg->i == 1) tmp = tmp->next; /* so it doesn't detect the same element if we want the next one
-			 									* but in case we search with a new pattern, we want it to match the curent
-												* position if it matches
-			 									*/
-
-			 while (tmp != NULL) {
-			 	reti = regexec(&regex, tmp->name, 0, NULL, 0);
-			 	if (!reti) break;
-			 	tmp = tmp->next;
-			 }
-
-			 if (tmp == NULL) {
-			 	tmp = dirlist;
-		     	strncpy(status, "search reached BOTTOM, starting from the TOP", MAX_NAME);
-
-			 	while (tmp != NULL) {
-			 		reti = regexec(&regex, tmp->name, 0, NULL, 0);
-			 		if (!reti) break;
-			 		tmp = tmp->next;
-			 	}
-			 }
-			 break;
-	
-	case -1: if (pattern[0] != 0) {
-				reti = regcomp(&regex, pattern, 0);
-		     	if (reti) return;
-				oktofree = 1;
-			 } else {
-		    	strncpy(status, "please input a pattern", MAX_NAME);
-			 	return;
-			 }
-
-			 tmp = tmp->prev;
-			 while (tmp != NULL) {
-				reti = regexec(&regex, tmp->name, 0, NULL, 0);
-				if (!reti) break;
-				tmp = tmp->prev;
-			 }
-
-			 if (tmp == NULL) {
-				tmp = dirlist;
-		    	strncpy(status, "search reached TOP, starting from the BOTTOM", MAX_NAME);
-
-				while (tmp) {
-					dirlistend = tmp;
-					tmp = tmp->next;
-				}
-				tmp = dirlistend;
-
-				while (tmp != NULL) {
-					reti = regexec(&regex, tmp->name, 0, NULL, 0);
-					if (!reti) break;
-					tmp = tmp->prev;
-			 	}
-			 }
-			 break;
-	}
-
-	if (oktofree) {
-		regfree(&regex);
-	}
-
-	if (tmp == NULL) {
-		strncpy(status, "no item with that pattern was found", MAX_NAME);
-		tmp = curent;
-	}
-
-	initialization();
-	curent = tmp;
-}
-
-void
-append_ll(Node **head, char *path, char *name)
-{
-	/* used to add files to the selection ll */
-	Node *tmp = (Node *)malloc(sizeof(Node));
-	strncpy(tmp->path, path, MAX_PATH);
-	strncpy(tmp->name, name, MAX_NAME);
-	tmp->next = *head;
-	tmp->prev = NULL;
-	if (*head != NULL)
-		(*head)->prev = tmp;
-	*head = tmp;
-}
-
-void
-free_ll(Node **head)
-{
-	Node *tmp = NULL;
-	while (*head != NULL) {
-		tmp = *head;
-		*head = (*head)->next;
-		free(tmp);
-	}
-}
-
-void
-selection(const Arg *arg)
-{
-	if (isselected(curent->path, curent->name)) {
-		/* remove from list */
-		rmvselection(curent->path, curent->name);
-	} else {
-		/* add it to the list */
-		append_ll(&selhead, curent->path, curent->name);
-	}
-	strncpy(status, "changed selection", MAX_NAME);
-}
-
-void
-clearselection(const Arg *arg)
-{
-	/* free the ll */
-	free_ll(&selhead);
-	strncpy(status, "cleared status", MAX_NAME);
 }
 
 void
@@ -523,6 +209,32 @@ rmvselection(char *path, char *name)
 	}
 }
 
+void
+append_ll(Node **head, char *path, char *name)
+{
+	/* used to add files to the selection ll */
+	Node *tmp = (Node *)malloc(sizeof(Node));
+	strncpy(tmp->path, path, MAX_PATH);
+	strncpy(tmp->name, name, MAX_NAME);
+	tmp->next = *head;
+	tmp->prev = NULL;
+	if (*head != NULL)
+		(*head)->prev = tmp;
+	*head = tmp;
+}
+
+void
+free_ll(Node **head)
+{
+	Node *tmp = NULL;
+	while (*head != NULL) {
+		tmp = *head;
+		*head = (*head)->next;
+		free(tmp);
+	}
+}
+
+
 int
 isselected(char *path, char *name)
 {
@@ -535,6 +247,364 @@ isselected(char *path, char *name)
 		tmp = tmp->next;
 	}
 	return 0;
+}
+
+void
+resizedetected(void)
+{
+	/* firstly end the win so we can reinit it */
+	endwin();
+	Node *tmp = curent;
+	initialization();
+	rdrwf();
+	curent = tmp;
+	strncpy(status, "window resized", MAX_NAME);
+}
+
+void
+rdrwf(void) /* (r)e(dr)a(w) (f)unction */
+{
+	struct stat pathstat;
+	char cwd[MAX_PATH];
+	getcwd(cwd, sizeof(cwd));
+	int i, curentonscreen = 0, pos = 0, numoffiles = 0, posinfiles = 0, digitsfiles, digitspos, t1;
+	Node *tmp = topofscreen;
+
+	/* display */
+	i = 0;
+
+	clear();
+	while (tmp != NULL && i < maxy-3) {
+		/* decision on wheter the element is a directory and if it is selected */
+		stat(tmp->name, &pathstat);
+		if (!S_ISREG(pathstat.st_mode)) {
+			if (isselected(cwd, tmp->name)) {
+				PRINTW(4, tmp->name, 1, 1);
+			} else {
+				PRINTW(3, tmp->name, 0, 1);
+			}
+		} else {
+			if (isselected(cwd, tmp->name)) {
+				PRINTW(2, tmp->name, 1, 0);
+			} else {
+				PRINTW(1, tmp->name, 0, 0);
+			}
+		}
+
+		if (tmp == curent) {
+			curentonscreen = 1;
+			pos = i;
+		}
+
+		tmp = tmp->next;
+		i++;
+	}
+
+	if (i == 0 || dirlist == NULL) {
+		PRINTW(5, "NO FILES IN CURRENT DIRECTORY", 0, 0);
+		curentonscreen = 1; /* to stop a possible infinite loop */
+	}
+	
+	if (!curentonscreen) {
+		topofscreen = curent;
+		rdrwf();
+	}
+	/* finally add the cursor */
+	mvaddch(pos, maxx/2+2, '<');
+
+	/* print a line to separate files from the status */
+	for (i = 0; i < maxx-1; i++) {
+		mvaddch(maxy-2, i, '-');
+	}
+
+	/* print the number of files and what number is the current file */
+	numoffiles = 0;
+	posinfiles = 0;
+	tmp = dirlist;
+	while (tmp) {
+		numoffiles++;
+		if (tmp == curent) {
+			posinfiles = numoffiles;
+		}
+		tmp = tmp->next;
+	}
+
+	NUMOFDIGITS(digitsfiles, numoffiles, t1);
+	NUMOFDIGITS(digitspos, posinfiles, t1);
+
+	mvprintw(maxy-1, maxx-digitspos-2-digitsfiles, "%d/%d", posinfiles, numoffiles);
+
+	/* print the curent working directory */
+	if (strlen(cwd) < maxx-digitspos-3-digitsfiles) mvprintw(maxy-1, maxx-digitspos-3-digitsfiles-strlen(cwd), cwd);
+
+	/* print the status */
+	mvprintw(maxy-1, 0, "%.*s", maxx-digitspos-7-digitsfiles-strlen(cwd), status);
+}
+
+void
+loop(void)
+{
+	int c, i;
+	rdrwf();
+	while ((c = getch()) != QUIT_CHAR) {
+		if (c == KEY_RESIZE) {
+			resizedetected();
+			continue;
+		}
+
+		status[0] = 0;
+		for (i = 0; i < LENGTH(keys); i++)
+			if (keys[i].chr == c) {
+				if (mode == 1) { /* selection manager
+				                  * check to see if the function is compatible
+                                  */
+					if(keys[i].func == selectionmanager || \
+							keys[i].func == movev || \
+							keys[i].func == brename || \
+					   		keys[i].func == search) {
+						keys[i].func(&keys[i].arg);
+					} else {
+						strncpy(status, "exit selection manager", MAX_NAME);
+					}
+
+				} else {
+					keys[i].func(&keys[i].arg);
+				}
+			}
+		rdrwf();
+	}
+}
+
+void
+cleanup(void)
+{
+	/* free any allocated memory */
+	free_ll(&dirlist);
+	free_ll(&selhead);
+	/* close curses session */
+	clear();
+	endwin();
+	FILE *fp = NULL;
+	if ((fp = fopen(VCD_PATH, "w+")) == NULL)
+		return;
+
+	char cwd[MAX_PATH];
+	if (getcwd(cwd, sizeof(cwd)) != NULL) {
+		printf("%s\n", cwd);
+		fprintf(fp, "%s\n", cwd);
+	}
+	
+	fclose(fp);
+}
+
+void
+movev(const Arg *arg)
+{
+	if (!arg) return;
+	if (curent == NULL || dirlist == NULL) return;
+
+	int i = arg->i, j = 0;
+
+	/* decide if we should go forward or backwards */
+
+	if (i == 1) {
+		if (curent->next) curent = curent->next;
+	} else if (i == -1) {
+		if (curent->prev) curent = curent->prev;
+	} else if (i == 2) {
+		for (j = 1; j <= maxy/2; j++) {
+			if (curent->next) curent = curent->next;
+		}
+	} else  if (i == -2) {
+		for (j = 1; j <= maxy/2; j++) {
+			if (curent->prev) curent = curent->prev;
+		}
+	}
+}
+
+void
+moveh(const Arg *arg)
+{
+	struct stat pathstat;
+	char oldpattern[MAX_PATH], *p;
+	Arg searcharg = {.i = 1};
+	int i, tosearch = 0;
+
+	memset(oldpattern, 0, sizeof(oldpattern));
+
+	if (!arg)
+		return;
+	
+	if (arg->i == -1) {
+		/* for a single level undo */
+		if (curent) {
+			p = strrchr(curent->path, '/');
+
+			if (p && p[1] != 0) {
+				tosearch = 1;
+				strncpy(oldpattern, pattern, MAX_PATH);
+				strncpy(pattern, p+1, MAX_PATH);
+				printf(pattern);
+			}
+		}
+
+		chdir("..");
+	} else {
+		stat(curent->name, &pathstat);
+		if (!S_ISREG(pathstat.st_mode)) {
+			chdir(curent->name);
+		}
+	}
+
+	getcurentfiles();
+	if (tosearch) {
+		search(&searcharg);
+		strncpy(pattern, oldpattern, MAX_PATH);
+	}
+	strncpy(status, "changed directory", MAX_NAME);
+}
+
+void
+first(const Arg *arg)
+{
+	curent = dirlist;
+}
+
+void
+last(const Arg *arg)
+{
+	if (dirlist == NULL) return;
+
+	int i;
+	Node *tmp = dirlist;
+
+	while (tmp->next != 0) {
+		tmp = tmp->next;
+	}
+
+	curent = tmp;
+	topofscreen = tmp;
+
+	for (i = 1; i < maxy / 2; i++) {
+		if (topofscreen->prev) topofscreen = topofscreen->prev;
+	}
+}
+
+void
+topofscreenscroll(const Arg *arg)
+{
+	int i = arg->i, ok = 0, j = 0;
+	Node *tmp = NULL;
+
+	/* no need to check if current will still be on screen for i == 1because 
+	 * rdrwf does that
+	 */
+
+	j = 0;
+
+	if (i == 1) {
+		if (topofscreen->next) topofscreen = topofscreen->next;
+	} else if (i == -1) {
+		/* checking if curent will be on screen, otherwise it will snap back to curent being topofscreen */
+		tmp = topofscreen->prev;
+
+		while (tmp && j < maxy-3) {
+			if (curent == tmp) ok = 1;
+			tmp = tmp->next;
+			j++;
+		}
+
+		if (topofscreen->prev && ok) topofscreen = topofscreen->prev;
+	}
+}
+
+void
+selection(const Arg *arg)
+{
+	if (isselected(curent->path, curent->name)) {
+		/* remove from list */
+		rmvselection(curent->path, curent->name);
+	} else {
+		/* add it to the list */
+		append_ll(&selhead, curent->path, curent->name);
+	}
+	strncpy(status, "changed selection", MAX_NAME);
+}
+
+void
+clearselection(const Arg *arg)
+{
+	/* free the ll */
+	free_ll(&selhead);
+	strncpy(status, "cleared status", MAX_NAME);
+}
+
+void
+selectionmanager(const Arg *arg)
+{
+	mode = !mode;
+	
+	if (mode == 1) {
+		free_ll(&dirlist);
+		dirlist = selhead;
+		topofscreen = selhead;
+		curent = selhead;
+		strncpy(status, "entered selection manager", MAX_NAME);
+	} else {
+		/* could also be done by saving them */
+		strncpy(status, "exited selection manager", MAX_NAME);
+		getcurentfiles();
+	}
+}
+
+void
+directoriesfirst(const Arg *arg)
+{
+	sortbydirectories = !sortbydirectories;
+	if (sortbydirectories == 1) {
+		strncpy(status, "sorting with directories being first", MAX_NAME);
+	} else {
+		strncpy(status, "sorting with normaly", MAX_NAME);
+	}
+	getcurentfiles();
+}
+
+void
+hiddenfilesswitch(const Arg *arg)
+{
+	hiddenfiles = !hiddenfiles;
+	if (hiddenfiles == 1) {
+		strncpy(status, "showing hidden files", MAX_NAME);
+	} else {
+		strncpy(status, "hiding hidden files", MAX_NAME);
+	}
+	getcurentfiles();
+}
+
+void
+copyfiles(const Arg *arg)
+{
+	/* same as move command, but with cp instead of mv */
+	Node *tmp = selhead;
+	char command[MAX_PATH];
+	char cwd[MAX_PATH];
+	getcwd(cwd, sizeof(cwd));
+
+	endwin();
+
+	while (tmp != NULL) {
+		/* create the command (yes i'm using the coreutils for this) */
+		sprintf(command, "cp -v -i -r '%s/%s' '%s'", tmp->path, tmp->name, cwd);
+		/* execute the command */
+		system(command);
+		
+		tmp = tmp->next;
+	}
+
+	clearselection(NULL);
+	initialization();
+	getcurentfiles();
+	strncpy(status, "copied files", MAX_NAME);
 }
 
 void
@@ -562,31 +632,12 @@ movefiles(const Arg *arg)
 	clearselection(NULL);
 	initialization();
 	getcurentfiles();
+	strncpy(status, "moved files", MAX_NAME);
 }
 
 void
-copyfiles(const Arg *arg)
+trashput(const Arg *arg)
 {
-	/* same as move command, but with cp instead of mv */
-	Node *tmp = selhead;
-	char command[MAX_PATH];
-	char cwd[MAX_PATH];
-	getcwd(cwd, sizeof(cwd));
-
-	endwin();
-
-	while (tmp != NULL) {
-		/* create the command (yes i'm using the coreutils for this) */
-		sprintf(command, "cp -v -i -r '%s/%s' '%s'", tmp->path, tmp->name, cwd);
-		/* execute the command */
-		system(command);
-		
-		tmp = tmp->next;
-	}
-
-	clearselection(NULL);
-	initialization();
-	getcurentfiles();
 }
 
 void
@@ -604,8 +655,10 @@ normrename(const Arg *arg)
 	/* move/rename */
 	if (rename(curent->name, newname) == 0) {
 		printf("file renamed\n");
+		strncpy(status, "file renamed", MAX_NAME);
 	} else {
 		printf("file not renamed\n");
+		strncpy(status, "file renamed", MAX_NAME);
 	}
 	/* maybe i'll remove this part, this one is for debugging */
 	printf("press RETURN to continue");
@@ -664,36 +717,127 @@ brename(const Arg *arg)
 
 	sprintf(command, "$EDITOR %s", BRENAME_SCRIPT_PATH);
 	system(command);
+
+	/* TODO: check for confirmation */
 	system(BRENAME_SCRIPT_PATH);
+	strncpy(status, "performed a bulk rename", MAX_NAME);
 
 	/* finally clear the selection */
 	clearselection(NULL);
 	getcurentfiles();
 }
 
-void
-directoriesfirst(const Arg *arg)
-{
-	sortbydirectories = !sortbydirectories;
-	getcurentfiles();
-}
 
 void
-selectionmanager(const Arg *arg)
+search(const Arg *arg)
 {
-}
+	/* search through the ll until i find a element that starts with that
+	 * then redraw the page starting with that element
+	 */
+	Node *tmp = curent, *dirlistend = NULL;
+	regex_t regex;
+	int reti, oktofree = 0;
 
-void
-resizedetected(void)
-{
-	/* firstly end the win so we can reinit it */
-	endwin();
-	Node *tmp = curent;
+    switch (arg->i) {
+    case 0: endwin();
+    
+            printf("search: ");
+            fgets(pattern, MAX_PATH, stdin);
+            if (pattern[strlen(pattern)-1] == '\n') pattern[strlen(pattern)-1] = 0;
+            
+            strncpy(status, "searched with new pattern", MAX_NAME);
+            
+            if (pattern[0] != 0) {
+            	reti = regcomp(&regex, pattern, 0);
+             	if (reti) return;
+            	oktofree = 1;
+            } else {
+            	strncpy(status, "please input a pattern", MAX_NAME);
+            	initialization();
+             	return;
+            }
+            /* FALLTHROUGH */
+    
+    case 1: if (!oktofree && pattern[0] != 0) {
+                reti = regcomp(&regex, pattern, 0);
+                 if (reti) return;
+                 oktofree = 1;
+            } else if (!oktofree) {
+               strncpy(status, "please input a pattern", MAX_NAME);
+               return;
+            }
+            
+            if (arg->i == 1) tmp = tmp->next; /* so it doesn't detect the same element if we want the next one
+                                               * but in case we search with a new pattern, we want it to match the curent
+                                               * position if it matches
+                                               */
+            
+            while (tmp != NULL) {
+               reti = regexec(&regex, tmp->name, 0, NULL, 0);
+               if (!reti) break;
+               tmp = tmp->next;
+            }
+            
+            if (tmp == NULL) {
+                tmp = dirlist;
+                strncpy(status, "search reached BOTTOM, starting from the TOP", MAX_NAME);
+                
+                while (tmp != NULL) {
+                   reti = regexec(&regex, tmp->name, 0, NULL, 0);
+                   if (!reti) break;
+                   tmp = tmp->next;
+                }
+            }
+            break;
+    
+    case -1: if (pattern[0] != 0) {
+    	         reti = regcomp(&regex, pattern, 0);
+    	         if (reti) return;
+    	         oktofree = 1;
+             } else {
+    	         strncpy(status, "please input a pattern", MAX_NAME);
+    	         return;
+             }
+    
+             tmp = tmp->prev;
+             while (tmp != NULL) {
+                 reti = regexec(&regex, tmp->name, 0, NULL, 0);
+                 if (!reti) break;
+                 tmp = tmp->prev;
+             }
+             
+             if (tmp == NULL) {
+                 tmp = dirlist;
+                 strncpy(status, "search reached TOP, starting from the BOTTOM", MAX_NAME);
+                 
+                 while (tmp) {
+                     dirlistend = tmp;
+                     tmp = tmp->next;
+                 }
+                 tmp = dirlistend;
+                 
+                 while (tmp != NULL) {
+                     reti = regexec(&regex, tmp->name, 0, NULL, 0);
+                     if (!reti) break;
+                     tmp = tmp->prev;
+                 }
+             }
+             break;
+    }
+
+	if (oktofree) {
+		regfree(&regex);
+	}
+
+	if (tmp == NULL) {
+		strncpy(status, "no item with that pattern was found", MAX_NAME);
+		tmp = curent;
+	}
+
 	initialization();
-	rdrwf();
 	curent = tmp;
-	strncpy(status, "window resized", MAX_NAME);
 }
+
 
 /* main */
 int
@@ -716,7 +860,6 @@ main(int argc, char *argv[])
 		}
 	}
 
-	sortbydirectories = DIRECTORIESFIRST;
 	initialization();
 	getcurentfiles();
 	loop();
