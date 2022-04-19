@@ -28,6 +28,7 @@ static Key keys[] = {
 	{'v',            selection,             {0}      },
 	{'V',            clearselection,        {0}      },
 	{'v' & CtrlMask, selectionmanager,      {0}      },
+	{'a' & CtrlMask, selectall,             {0}      },
 
 	/* sorting */
 	{'-',            directoriesfirst,      {0}      },
@@ -35,8 +36,8 @@ static Key keys[] = {
 	{'.',            hiddenfilesswitch,     {0}      },
                                   	     
 	/* copy, move, rename, bulk rename and trash put */
-	{'y',            copyfiles,             {0}      },
-	{'d',            movefiles,             {0}      },
+	{'y',            copyfiles,             {.i = 0} }, /* 0 = ask if there is a file with the same name, 1 = always replace, -1 = never ask, never replace */
+	{'d',            movefiles,             {.i = 0} }, /* 0 = ask if there is a file with the same name, 1 = always replace, -1 = never ask, never replace */
 	{'d',            trashput,              {0}      },
 	{'c',            normrename,            {0}      },
 	{'b',            brename,               {0}      },

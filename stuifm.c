@@ -70,10 +70,11 @@ static void movev(const Arg *arg);
 static void moveh(const Arg *arg);
 static void first(const Arg *arg);
 static void last(const Arg *arg);
-void topofscreenscroll(const Arg *arg);
+static void topofscreenscroll(const Arg *arg);
 static void selection(const Arg *arg);
 static void clearselection (const Arg *arg);
 static void selectionmanager(const Arg *arg);
+static void selectall(const Arg *arg);
 static void directoriesfirst(const Arg *arg);
 static void hiddenfilesswitch(const Arg *arg);
 static void copyfiles(const Arg *arg);
@@ -90,7 +91,7 @@ static Node *curent = NULL; /* the file that the cursor is placed on */
 static Node *topofscreen = NULL;
 
 static int  maxy, maxx, sortbydirectories = 0, hiddenfiles = 0, mode = 0;
-static char status[MAX_NAME], pattern[MAX_PATH];
+static char status[MAX_NAME], pattern[MAX_PATH], cwd[MAX_PATH];
 
 /* config.h */
 #include "config.h"
@@ -122,7 +123,6 @@ getcurentfiles(void)
 
 	int lendir = -1, i;
 	struct dirent **namelist;
-	char cwd[MAX_PATH];
 	struct stat pathstat;
 
 	getcwd(cwd, sizeof(cwd));
@@ -265,8 +265,6 @@ void
 rdrwf(void) /* (r)e(dr)a(w) (f)unction */
 {
 	struct stat pathstat;
-	char cwd[MAX_PATH];
-	getcwd(cwd, sizeof(cwd));
 	int i, curentonscreen = 0, pos = 0, numoffiles = 0, posinfiles = 0, digitsfiles, digitspos, t1;
 	Node *tmp = topofscreen;
 
@@ -353,6 +351,7 @@ loop(void)
 		}
 
 		status[0] = 0;
+		getcwd(cwd, MAX_PATH);
 		for (i = 0; i < LENGTH(keys); i++)
 			if (keys[i].chr == c) {
 				if (mode == 1) { /* selection manager
@@ -388,7 +387,6 @@ cleanup(void)
 	if ((fp = fopen(VCD_PATH, "w+")) == NULL)
 		return;
 
-	char cwd[MAX_PATH];
 	if (getcwd(cwd, sizeof(cwd)) != NULL) {
 		printf("%s\n", cwd);
 		fprintf(fp, "%s\n", cwd);
@@ -496,7 +494,7 @@ topofscreenscroll(const Arg *arg)
 	int i = arg->i, ok = 0, j = 0;
 	Node *tmp = NULL;
 
-	/* no need to check if current will still be on screen for i == 1because 
+	/* no need to check if current will still be on screen for i == 1 because 
 	 * rdrwf does that
 	 */
 
@@ -521,6 +519,11 @@ topofscreenscroll(const Arg *arg)
 void
 selection(const Arg *arg)
 {
+	if (curent == NULL) {
+		strncpy(status, "no curent file/no files in directory", MAX_NAME);
+		return;
+	}
+
 	if (isselected(curent->path, curent->name)) {
 		/* remove from list */
 		rmvselection(curent->path, curent->name);
@@ -558,6 +561,17 @@ selectionmanager(const Arg *arg)
 }
 
 void
+selectall(const Arg *arg)
+{
+	Node *tmp = dirlist;
+	while (tmp) {
+		if (!isselected(curent->path, curent->name)) {
+			append_ll(&selhead, curent->path, curent->name);
+		}
+	}
+}
+
+void
 directoriesfirst(const Arg *arg)
 {
 	sortbydirectories = !sortbydirectories;
@@ -584,47 +598,141 @@ hiddenfilesswitch(const Arg *arg)
 void
 copyfiles(const Arg *arg)
 {
-	/* same as move command, but with cp instead of mv */
+	char oldpath[MAX_PATH], input[MAX_NAME], chr;
+	int replaceall, copiedall = 1, ok;
+	FILE *ffrom, *fto;
+	struct stat s = {0};
 	Node *tmp = selhead;
-	char command[MAX_PATH];
-	char cwd[MAX_PATH];
-	getcwd(cwd, sizeof(cwd));
+
+	if (tmp == NULL) {
+		strncpy(status, "selection is empty", MAX_PATH);
+		return;
+	}
+
+	if (arg) replaceall = arg->i; /* 0 means not set, -1 means never replace and 1 means always replace */
+	else replaceall = 0;
 
 	endwin();
 
 	while (tmp != NULL) {
-		/* create the command (yes i'm using the coreutils for this) */
-		sprintf(command, "cp -v -i -r '%s/%s' '%s'", tmp->path, tmp->name, cwd);
-		/* execute the command */
-		system(command);
-		
+		snprintf(oldpath, MAX_PATH, "%s/%s", tmp->path, tmp->name);
+
+		ok = 1;
+		if ((replaceall == 0 || replaceall == -1) && stat(tmp->name, &s) == 0) {
+			if (replaceall == 0) {
+				printf("a file with the name %s already exists in the curent directory, do you want to repalce it [yes/all/No/Stop asking (no)]: ");
+				fgets(input, MAX_NAME, stdin);
+
+				switch (input[0]) {
+				case 'A': /* fallthrough */
+				case 'a': replaceall = 1;
+				          /* fallthrough */
+				case 'Y': /* fallthrough */
+				case 'y': ok = 1;
+				          break;
+				case 'S': /* fallthrough */
+				case 's': replaceall = -1;
+				          /* fallthrough */
+				case 'N': /* fallthrough */
+				case 'n': /* fallthrough */
+				default: ok = 0;
+				}
+			} else if (replaceall == -1) {
+				ok = 0;
+			}
+		}
+
+		if (ok) {
+			ffrom = fopen(oldpath, "r");
+			fto = fopen(tmp->name, "w");
+
+			if (ffrom == NULL || fto == NULL) {
+				printf("error on opening one of the files for reading %s\n", oldpath);
+				copiedall = 0;
+			} else {
+				while ((chr = fgetc(ffrom)) != EOF) {
+					fputc(chr, fto);
+				}
+				printf("copied %s/%s to %s/%s\n", tmp->path, tmp->name, cwd, tmp->name);
+			}
+
+			if (ffrom != NULL) fclose(ffrom);
+			if (fto != NULL) fclose(fto);
+		} else {
+			copiedall = 0;
+			printf("not allowed to copy file %s\n", oldpath);
+		}
+
 		tmp = tmp->next;
 	}
 
 	clearselection(NULL);
 	initialization();
 	getcurentfiles();
-	strncpy(status, "copied files", MAX_NAME);
+	if (copiedall) strncpy(status, "copied all files", MAX_NAME);
+	else strncpy(status, "copied some of the files", MAX_NAME);
 }
 
 void
 movefiles(const Arg *arg)
 {
+	char oldpath[MAX_PATH], input[MAX_NAME];
+	int movedall = 1, replaceall, ok;
+	struct stat s = {0};
 	Node *tmp = selhead;
-	char command[MAX_PATH] = "mv ";
-	char cwd[MAX_PATH];
-	getcwd(cwd, sizeof(cwd));
+
+	if (tmp == NULL) {
+		strncpy(status, "selection is empty", MAX_PATH);
+		return;
+	}
+
+	if (arg) replaceall = arg->i; /* 0 means not set, -1 means never replace and 1 means always replace */
+	else replaceall = 0;
 
 	/* end the window so we can get standard input/output */
 	endwin();
 
-	/* run the move command on all selected files */
 	while (tmp != NULL) {
-		/* create the command (yes i'm using the coreutils for this) */
-		sprintf(command, "mv -v -i '%s/%s' '%s'", tmp->path, tmp->name, cwd);
-		/* execute the command */
-		system(command);
-		
+		snprintf(oldpath, MAX_PATH, "%s/%s", tmp->path, tmp->name);
+
+		ok = 1;
+		if ((replaceall == 0 || replaceall == -1) && stat(tmp->name, &s) == 0) {
+			if (replaceall == 0) {
+				printf("a file with the name %s already exists in the curent directory, do you want to repalce it [yes/all/No/Stop asking (no)]: ");
+				fgets(input, MAX_NAME, stdin);
+
+				switch (input[0]) {
+				case 'A': /* fallthrough */
+				case 'a': replaceall = 1;
+				          /* fallthrough */
+				case 'Y': /* fallthrough */
+				case 'y': ok = 1;
+				          break;
+				case 'S': /* fallthrough */
+				case 's': replaceall = -1;
+				          /* fallthrough */
+				case 'N': /* fallthrough */
+				case 'n': /* fallthrough */
+				default: ok = 0;
+				}
+			} else if (replaceall == -1) {
+				ok = 0;
+			}
+		}
+
+
+		if (ok) {
+			if (rename(oldpath, tmp->name) != 0) {
+				printf("error on file %s\n", oldpath); /* the exact error with errno is not really relevant */
+				movedall = 0;
+			} else {
+				printf("moved %s/%s to %s/%s\n", tmp->path, tmp->name, cwd, tmp->name);
+			}
+		} else {
+			printf("not allowed to move file %s\n", oldpath);
+			movedall = 0;
+		}
+
 		tmp = tmp->next;
 	}
 
@@ -632,7 +740,8 @@ movefiles(const Arg *arg)
 	clearselection(NULL);
 	initialization();
 	getcurentfiles();
-	strncpy(status, "moved files", MAX_NAME);
+	if (movedall) strncpy(status, "moved all files", MAX_NAME);
+	else strncpy(status, "moved some of the files", MAX_NAME);
 }
 
 void
@@ -643,28 +752,42 @@ trashput(const Arg *arg)
 void
 normrename(const Arg *arg)
 {
-	char newname[MAX_PATH];
-	/* endwin */
-	endwin();
-	/* get the new name */
-	printf("the name of the new file: ");
+	char newname[MAX_PATH], input[MAX_NAME];
+	struct stat s = {0};
+	int ok, replace;
 
+	if (arg) replace = arg->i;
+	else replace = 0;
+
+	endwin();
+
+	printf("the name of the new file: ");
 	fgets(newname, MAX_PATH, stdin);
 	if (newname[strlen(newname)-1] == '\n') newname[strlen(newname)-1] = 0; /* strip '\n' */
 
-	/* move/rename */
-	if (rename(curent->name, newname) == 0) {
-		printf("file renamed\n");
-		strncpy(status, "file renamed", MAX_NAME);
-	} else {
-		printf("file not renamed\n");
-		strncpy(status, "file renamed", MAX_NAME);
-	}
-	/* maybe i'll remove this part, this one is for debugging */
-	printf("press RETURN to continue");
-	getchar();
+	ok = 1;
+	if (replace == 0 && stat(newname, &s) == 0) {
+		printf("there is already a file with the name %s in this directory, do you want to replace it: [y/N]: ");
+		fgets(input, MAX_NAME, stdin);
 
-	/* reinitialize */
+		if (input[0] != 'y' && input[0] != 'y') { /* input[0] is anything other than y or Y */
+			ok = 0;
+		}
+	}
+
+	if (replace == 1) ok = 1;
+	if (replace == -1) ok = 0;
+
+	if (ok) {
+		if (rename(curent->name, newname) == 0) {
+			printf("file renamed\n");
+			strncpy(status, "file renamed", MAX_NAME);
+		} else {
+			printf("file not renamed\n");
+			strncpy(status, "file not renamed", MAX_NAME);
+		}
+	}
+
 	initialization();
 	getcurentfiles();
 }
@@ -672,6 +795,7 @@ normrename(const Arg *arg)
 void
 brename(const Arg *arg)
 {
+	/* this one is done with coreutils */
 	/* don't do anything if nothing is selected */
 	if (selhead == NULL) return;
 
@@ -679,7 +803,7 @@ brename(const Arg *arg)
 	endwin();
 
 	Node *tmp = selhead;
-	char command[MAX_PATH], newname[MAX_NAME];
+	char command[MAX_PATH], newname[MAX_NAME], input[MAX_NAME];
 
 	FILE *fp = NULL, *gp = NULL;
 	if ((fp = fopen(BRENAME_TXT_PATH, "w+")) == NULL)
@@ -699,7 +823,7 @@ brename(const Arg *arg)
 	/* build rename script */
 	if ((fp = fopen(BRENAME_TXT_PATH, "r")) == NULL)
 		return;
-	if ((gp = fopen(BRENAME_SCRIPT_PATH, "w+")) == NULL)
+	if ((gp = fopen(BRENAME_SCRIPT_PATH, "w")) == NULL)
 		return;
 
 	fprintf(gp, "#!/bin/bash\n");
@@ -718,9 +842,14 @@ brename(const Arg *arg)
 	sprintf(command, "$EDITOR %s", BRENAME_SCRIPT_PATH);
 	system(command);
 
-	/* TODO: check for confirmation */
-	system(BRENAME_SCRIPT_PATH);
-	strncpy(status, "performed a bulk rename", MAX_NAME);
+	printf("do you want to run that script [yes/No]: ");
+	fgets(input, MAX_NAME, stdin);
+
+	printf("%s\n", input);
+	if (input[0] == 'y' || input[0] == 'Y') {
+		system(BRENAME_SCRIPT_PATH);
+		strncpy(status, "performed a bulk rename", MAX_NAME);
+	}
 
 	/* finally clear the selection */
 	clearselection(NULL);
