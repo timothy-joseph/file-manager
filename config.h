@@ -10,6 +10,14 @@
 #define SELECTEDCOLOR  COLOR_RED
 #define DIRECTORYCOLOR COLOR_BLUE
 
+/* example commands
+ * the array must have one element (a string)
+ */
+static const char *c1[] = {"ls"};
+static const char *c2[] = {"ls %"}; /* % means the current file */
+static const char *c3[] = {"ls %p"}; /* %p means the current working directory */
+static const char *c4[] = {"ls %s"}; /* %s means the selection */
+
 static Key keys[] = {
 	/* movement */
 	{'j',            movev,                 {.i = +1}},
@@ -38,12 +46,19 @@ static Key keys[] = {
 	/* copy, move, rename, bulk rename and trash put */
 	{'y',            copyfiles,             {.i = 0} }, /* 0 = ask if there is a file with the same name, 1 = always replace, -1 = never ask, never replace */
 	{'d',            movefiles,             {.i = 0} }, /* 0 = ask if there is a file with the same name, 1 = always replace, -1 = never ask, never replace */
-	{'d',            trashput,              {0}      },
 	{'c',            normrename,            {0}      },
 	{'b',            brename,               {0}      },
 
 	/* searching */
 	{'/',            search,                {.i = 0} },
 	{'n',            search,                {.i = +1}},
-	{'N',            search,                {.i = -1}}
+	{'N',            search,                {.i = -1}},
+
+	/* commands */
+	{'!',            executecommand,        {0}      },
+	/* example commands */
+	{'[',            executecommand,        {.v = c1}},
+	{']',            executecommand,        {.v = c2}},
+	{'(',            executecommand,        {.v = c3}},
+	{')',            executecommand,        {.v = c4}},
 };

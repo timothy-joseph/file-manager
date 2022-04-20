@@ -45,7 +45,7 @@ struct Node {
 typedef union Arg Arg;
 union Arg {
 	int i;
-	char *s;
+	void *v;
 };
 
 typedef struct Key Key;
@@ -57,7 +57,7 @@ struct Key {
 
 /* function declarations */
 static void initialization(void);
-static void getcurentfiles(void);
+static void getcurrentfiles(void);
 static void append_ll(Node **head, char *path, char *name);
 static void free_ll(Node **head);
 static void rmvselection(char *path, char *name);
@@ -79,15 +79,15 @@ static void directoriesfirst(const Arg *arg);
 static void hiddenfilesswitch(const Arg *arg);
 static void copyfiles(const Arg *arg);
 static void movefiles(const Arg *arg);
-static void trashput(const Arg *arg);
 static void normrename(const Arg *arg);
 static void brename(const Arg *arg);
 static void search(const Arg *arg);
+static void executecommand(const Arg *arg);
 
 /* global variables */
 static Node *selhead = NULL;
 static Node *dirlist = NULL;
-static Node *curent = NULL; /* the file that the cursor is placed on */
+static Node *current = NULL; /* the file that the cursor is placed on */
 static Node *topofscreen = NULL;
 
 static int  maxy, maxx, sortbydirectories = 0, hiddenfiles = 0, mode = 0;
@@ -116,7 +116,7 @@ initialization(void)
 }
 
 void
-getcurentfiles(void)
+getcurrentfiles(void)
 {
 	/* free ll */
 	free_ll(&dirlist);
@@ -164,7 +164,7 @@ getcurentfiles(void)
 		}
 	}
 	topofscreen = dirlist;
-	curent = dirlist;
+	current = dirlist;
 	free(namelist);
 }
 
@@ -254,10 +254,10 @@ resizedetected(void)
 {
 	/* firstly end the win so we can reinit it */
 	endwin();
-	Node *tmp = curent;
+	Node *tmp = current;
 	initialization();
 	rdrwf();
-	curent = tmp;
+	current = tmp;
 	strncpy(status, "window resized", MAX_NAME);
 }
 
@@ -265,7 +265,7 @@ void
 rdrwf(void) /* (r)e(dr)a(w) (f)unction */
 {
 	struct stat pathstat;
-	int i, curentonscreen = 0, pos = 0, numoffiles = 0, posinfiles = 0, digitsfiles, digitspos, t1;
+	int i, currentonscreen = 0, pos = 0, numoffiles = 0, posinfiles = 0, digitsfiles, digitspos, t1;
 	Node *tmp = topofscreen;
 
 	/* display */
@@ -289,8 +289,8 @@ rdrwf(void) /* (r)e(dr)a(w) (f)unction */
 			}
 		}
 
-		if (tmp == curent) {
-			curentonscreen = 1;
+		if (tmp == current) {
+			currentonscreen = 1;
 			pos = i;
 		}
 
@@ -300,11 +300,11 @@ rdrwf(void) /* (r)e(dr)a(w) (f)unction */
 
 	if (i == 0 || dirlist == NULL) {
 		PRINTW(5, "NO FILES IN CURRENT DIRECTORY", 0, 0);
-		curentonscreen = 1; /* to stop a possible infinite loop */
+		currentonscreen = 1; /* to stop a possible infinite loop */
 	}
 	
-	if (!curentonscreen) {
-		topofscreen = curent;
+	if (!currentonscreen) {
+		topofscreen = current;
 		rdrwf();
 	}
 	/* finally add the cursor */
@@ -321,7 +321,7 @@ rdrwf(void) /* (r)e(dr)a(w) (f)unction */
 	tmp = dirlist;
 	while (tmp) {
 		numoffiles++;
-		if (tmp == curent) {
+		if (tmp == current) {
 			posinfiles = numoffiles;
 		}
 		tmp = tmp->next;
@@ -332,7 +332,7 @@ rdrwf(void) /* (r)e(dr)a(w) (f)unction */
 
 	mvprintw(maxy-1, maxx-digitspos-2-digitsfiles, "%d/%d", posinfiles, numoffiles);
 
-	/* print the curent working directory */
+	/* print the current working directory */
 	if (strlen(cwd) < maxx-digitspos-3-digitsfiles) mvprintw(maxy-1, maxx-digitspos-3-digitsfiles-strlen(cwd), cwd);
 
 	/* print the status */
@@ -399,23 +399,23 @@ void
 movev(const Arg *arg)
 {
 	if (!arg) return;
-	if (curent == NULL || dirlist == NULL) return;
+	if (current == NULL || dirlist == NULL) return;
 
 	int i = arg->i, j = 0;
 
 	/* decide if we should go forward or backwards */
 
 	if (i == 1) {
-		if (curent->next) curent = curent->next;
+		if (current->next) current = current->next;
 	} else if (i == -1) {
-		if (curent->prev) curent = curent->prev;
+		if (current->prev) current = current->prev;
 	} else if (i == 2) {
 		for (j = 1; j <= maxy/2; j++) {
-			if (curent->next) curent = curent->next;
+			if (current->next) current = current->next;
 		}
 	} else  if (i == -2) {
 		for (j = 1; j <= maxy/2; j++) {
-			if (curent->prev) curent = curent->prev;
+			if (current->prev) current = current->prev;
 		}
 	}
 }
@@ -435,26 +435,26 @@ moveh(const Arg *arg)
 	
 	if (arg->i == -1) {
 		/* for a single level undo */
-		if (curent) {
-			p = strrchr(curent->path, '/');
+		p = strrchr(cwd, '/');
 
-			if (p && p[1] != 0) {
-				tosearch = 1;
-				strncpy(oldpattern, pattern, MAX_PATH);
-				strncpy(pattern, p+1, MAX_PATH);
-				printf(pattern);
-			}
+		if (p && p[1] != 0) {
+			tosearch = 1;
+			strncpy(oldpattern, pattern, MAX_PATH);
+			strncpy(pattern, p+1, MAX_PATH);
+			printf(pattern);
 		}
 
 		chdir("..");
 	} else {
-		stat(curent->name, &pathstat);
+		stat(current->name, &pathstat);
 		if (!S_ISREG(pathstat.st_mode)) {
-			chdir(curent->name);
+			chdir(current->name);
+		} else {
+			return;
 		}
 	}
 
-	getcurentfiles();
+	getcurrentfiles();
 	if (tosearch) {
 		search(&searcharg);
 		strncpy(pattern, oldpattern, MAX_PATH);
@@ -465,7 +465,7 @@ moveh(const Arg *arg)
 void
 first(const Arg *arg)
 {
-	curent = dirlist;
+	current = dirlist;
 }
 
 void
@@ -480,7 +480,7 @@ last(const Arg *arg)
 		tmp = tmp->next;
 	}
 
-	curent = tmp;
+	current = tmp;
 	topofscreen = tmp;
 
 	for (i = 1; i < maxy / 2; i++) {
@@ -503,11 +503,11 @@ topofscreenscroll(const Arg *arg)
 	if (i == 1) {
 		if (topofscreen->next) topofscreen = topofscreen->next;
 	} else if (i == -1) {
-		/* checking if curent will be on screen, otherwise it will snap back to curent being topofscreen */
+		/* checking if current will be on screen, otherwise it will snap back to current being topofscreen */
 		tmp = topofscreen->prev;
 
 		while (tmp && j < maxy-3) {
-			if (curent == tmp) ok = 1;
+			if (current == tmp) ok = 1;
 			tmp = tmp->next;
 			j++;
 		}
@@ -519,17 +519,17 @@ topofscreenscroll(const Arg *arg)
 void
 selection(const Arg *arg)
 {
-	if (curent == NULL) {
-		strncpy(status, "no curent file/no files in directory", MAX_NAME);
+	if (current == NULL) {
+		strncpy(status, "no current file/no files in directory", MAX_NAME);
 		return;
 	}
 
-	if (isselected(curent->path, curent->name)) {
+	if (isselected(current->path, current->name)) {
 		/* remove from list */
-		rmvselection(curent->path, curent->name);
+		rmvselection(current->path, current->name);
 	} else {
 		/* add it to the list */
-		append_ll(&selhead, curent->path, curent->name);
+		append_ll(&selhead, current->path, current->name);
 	}
 	strncpy(status, "changed selection", MAX_NAME);
 }
@@ -539,7 +539,7 @@ clearselection(const Arg *arg)
 {
 	/* free the ll */
 	free_ll(&selhead);
-	strncpy(status, "cleared status", MAX_NAME);
+	strncpy(status, "cleared selection", MAX_NAME);
 }
 
 void
@@ -551,12 +551,12 @@ selectionmanager(const Arg *arg)
 		free_ll(&dirlist);
 		dirlist = selhead;
 		topofscreen = selhead;
-		curent = selhead;
+		current = selhead;
 		strncpy(status, "entered selection manager", MAX_NAME);
 	} else {
 		/* could also be done by saving them */
 		strncpy(status, "exited selection manager", MAX_NAME);
-		getcurentfiles();
+		getcurrentfiles();
 	}
 }
 
@@ -565,8 +565,8 @@ selectall(const Arg *arg)
 {
 	Node *tmp = dirlist;
 	while (tmp) {
-		if (!isselected(curent->path, curent->name)) {
-			append_ll(&selhead, curent->path, curent->name);
+		if (!isselected(current->path, current->name)) {
+			append_ll(&selhead, current->path, current->name);
 		}
 	}
 }
@@ -580,7 +580,7 @@ directoriesfirst(const Arg *arg)
 	} else {
 		strncpy(status, "sorting with normaly", MAX_NAME);
 	}
-	getcurentfiles();
+	getcurrentfiles();
 }
 
 void
@@ -592,7 +592,7 @@ hiddenfilesswitch(const Arg *arg)
 	} else {
 		strncpy(status, "hiding hidden files", MAX_NAME);
 	}
-	getcurentfiles();
+	getcurrentfiles();
 }
 
 void
@@ -620,7 +620,7 @@ copyfiles(const Arg *arg)
 		ok = 1;
 		if ((replaceall == 0 || replaceall == -1) && stat(tmp->name, &s) == 0) {
 			if (replaceall == 0) {
-				printf("a file with the name %s already exists in the curent directory, do you want to repalce it [yes/all/No/Stop asking (no)]: ");
+				printf("a file with the name %s already exists in the current directory, do you want to repalce it [yes/all/No/Stop asking (no)]: ");
 				fgets(input, MAX_NAME, stdin);
 
 				switch (input[0]) {
@@ -668,7 +668,7 @@ copyfiles(const Arg *arg)
 
 	clearselection(NULL);
 	initialization();
-	getcurentfiles();
+	getcurrentfiles();
 	if (copiedall) strncpy(status, "copied all files", MAX_NAME);
 	else strncpy(status, "copied some of the files", MAX_NAME);
 }
@@ -698,7 +698,7 @@ movefiles(const Arg *arg)
 		ok = 1;
 		if ((replaceall == 0 || replaceall == -1) && stat(tmp->name, &s) == 0) {
 			if (replaceall == 0) {
-				printf("a file with the name %s already exists in the curent directory, do you want to repalce it [yes/all/No/Stop asking (no)]: ");
+				printf("a file with the name %s already exists in the current directory, do you want to repalce it [yes/all/No/Stop asking (no)]: ");
 				fgets(input, MAX_NAME, stdin);
 
 				switch (input[0]) {
@@ -739,14 +739,9 @@ movefiles(const Arg *arg)
 	/* clear the selection and reinit*/
 	clearselection(NULL);
 	initialization();
-	getcurentfiles();
+	getcurrentfiles();
 	if (movedall) strncpy(status, "moved all files", MAX_NAME);
 	else strncpy(status, "moved some of the files", MAX_NAME);
-}
-
-void
-trashput(const Arg *arg)
-{
 }
 
 void
@@ -779,7 +774,7 @@ normrename(const Arg *arg)
 	if (replace == -1) ok = 0;
 
 	if (ok) {
-		if (rename(curent->name, newname) == 0) {
+		if (rename(current->name, newname) == 0) {
 			printf("file renamed\n");
 			strncpy(status, "file renamed", MAX_NAME);
 		} else {
@@ -789,7 +784,7 @@ normrename(const Arg *arg)
 	}
 
 	initialization();
-	getcurentfiles();
+	getcurrentfiles();
 }
 
 void
@@ -853,7 +848,7 @@ brename(const Arg *arg)
 
 	/* finally clear the selection */
 	clearselection(NULL);
-	getcurentfiles();
+	getcurrentfiles();
 }
 
 
@@ -863,7 +858,7 @@ search(const Arg *arg)
 	/* search through the ll until i find a element that starts with that
 	 * then redraw the page starting with that element
 	 */
-	Node *tmp = curent, *dirlistend = NULL;
+	Node *tmp = current, *dirlistend = NULL;
 	regex_t regex;
 	int reti, oktofree = 0;
 
@@ -897,7 +892,7 @@ search(const Arg *arg)
             }
             
             if (arg->i == 1) tmp = tmp->next; /* so it doesn't detect the same element if we want the next one
-                                               * but in case we search with a new pattern, we want it to match the curent
+                                               * but in case we search with a new pattern, we want it to match the current
                                                * position if it matches
                                                */
             
@@ -960,11 +955,87 @@ search(const Arg *arg)
 
 	if (tmp == NULL) {
 		strncpy(status, "no item with that pattern was found", MAX_NAME);
-		tmp = curent;
+		tmp = current;
 	}
 
 	initialization();
-	curent = tmp;
+	current = tmp;
+}
+
+void
+executecommand(const Arg *arg)
+{
+	char input[MAX_NAME], inputcommand[MAX_PATH], command[MAX_PATH], toconcat[MAX_PATH];
+	int i, k = 0;
+	Node *tmp = NULL;
+	
+	endwin();
+
+	if (!arg || !arg->v) {
+		printf("your command: ");
+		fgets(inputcommand, MAX_PATH, stdin);
+		if (inputcommand[strlen(inputcommand)-1] == '\n') inputcommand[strlen(inputcommand)-1] = 0;
+	} else {
+		strncpy(inputcommand, *((char **)arg->v), MAX_PATH);
+	}
+
+	/* determine if in the input command i need to put the current file name, the whole selection or leave it like this
+	 * % means current file
+	 * %s means whole selection
+	 * %p means the current working directory
+	 */
+	
+	for (i = 0; inputcommand[i] != 0 && k < MAX_PATH - 1; i++) {
+		if (inputcommand[i] == '%') {
+			if (inputcommand[i+1] == 's') {
+				if (selhead == NULL) {
+					strncpy(status, "selection is empty", MAX_NAME);
+					return;
+				}
+				tmp = selhead;
+
+				while (tmp) {
+					if (tmp->next) snprintf(toconcat, "%s/%s ", tmp->path, tmp->name);
+					else snprintf(toconcat, "%s/%s", tmp->path, tmp->name);
+					strncat(command, toconcat, MAX_PATH-strlen(toconcat)-1);
+					toconcat[0] = 0;
+					k = strlen(command);
+
+					tmp = tmp->next;
+				}
+				i++;
+
+			} else if (inputcommand[i+1] == 'p') {
+				strncat(command, cwd, MAX_PATH-strlen(cwd)-1);
+				k = strlen(command);
+				i++;
+			} else {
+				strncat(command, current->name, MAX_PATH-strlen(current->name)-1);
+				k = strlen(command);
+			}
+		} else {
+			command[k] = inputcommand[i];
+			k++;
+			command[k] = 0;
+		}
+	}
+
+	printf("are you sure you want to execute the command '%s' [yes/No]: ", command);
+	fgets(input, MAX_NAME, stdin);
+
+
+	if (input[0] == 'y' || input[0] == 'Y') {
+		system(command);
+		snprintf(status, MAX_NAME, "executed the command '%s'", command);
+	} else {
+		snprintf(status, MAX_NAME, "didn't execute the command '%s'", command);
+	}
+
+	printf("press any key to continue\n");
+	fgetc(stdin);
+
+	initialization();
+	getcurrentfiles();
 }
 
 
@@ -978,7 +1049,7 @@ main(int argc, char *argv[])
 			return 0;
 		} else if(strcmp(argv[1], "--help") == 0) {
 			printf("use: stuifm [--version|--help] or stuifm [directory]\n");
-			/* TODO: show the default bindings */
+			printf("check the README.md for a tutorial\n");
 			printf("for using it as a way to cd into a directory, put the following in your .bashrc:\n");
 			printf("alias fm='stuifm; LASTDIR=`cat $HOME/.vcd`; cd \"$LASTDIR\"'\n");
 			printf("and call the program using fm\n\n");
@@ -990,7 +1061,7 @@ main(int argc, char *argv[])
 	}
 
 	initialization();
-	getcurentfiles();
+	getcurrentfiles();
 	loop();
 	cleanup();
 
