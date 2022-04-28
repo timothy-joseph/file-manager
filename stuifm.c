@@ -1,3 +1,4 @@
+/* TODO: add more colour options for stuifm */
 /* See LICENSE file for license details */
 #include <stdio.h>
 #include <stdlib.h>
@@ -8,20 +9,24 @@
 #include <ncurses.h>
 #include <dirent.h>
 #include <regex.h>
+#include <pwd.h>
+#include <grp.h>
+#include <time.h>
 
 /* macros */
 #define MAX_PATH 4096
 #define MAX_NAME 255
 
 #define LENGTH(X) (sizeof(X) / sizeof(X[0]))
-#define PRINTW(X, STR, ISSEL, ISDIR) if ((ISSEL)) addch('>'); \
-                                     for (int j = 1; j <= maxx/2-strlen((STR))-(!!ISSEL); j++) { \
-                                         addch(' '); \
-                                     } \
-                                     attron(COLOR_PAIR((X))); /* colour - colour pair X */ \
-                                     if ((ISDIR)) printw("%s/\n", (STR)); \
-                                     else printw("%s\n", (STR)); \
-                                     attroff(COLOR_PAIR((X))); \
+
+#define PRINTW(COLOURPAIR, LINE, COLUMN, MAXSIZE, ISSEL, ISDIR, STR) attron(COLOR_PAIR((COLOURPAIR))); \
+                                                                     move((LINE), (COLUMN)); \
+                                                                     if ((ISSEL)) addch(' '); \
+                                                                     if ((ISDIR)) printw("%.*s/", (MAXSIZE)-1-(!!(ISSEL)), (STR)); \
+                                                                     else printw("%.*s", (MAXSIZE)-(!!(ISSEL)), (STR)); \
+																	 for (int j = 1+(!!(ISSEL))+MIN((MAXSIZE), strlen((STR)))+(!!(ISDIR)); j <= MAXSIZE; j++) addch(' '); \
+                                                                     attroff(COLOR_PAIR);
+
 
 #define NUMOFDIGITS(RET, NUM, VAR) VAR = (NUM); \
                                    RET = 0; \
@@ -31,8 +36,12 @@
                                    } \
 								   if (RET == 0) RET = 1; \
 
+#define MAX(X, Y) (((X) > (Y)) ? (X) : (Y))
+#define MIN(X, Y) (((X) <= (Y)) ? (X) : (Y))
 
-#define VERSION "1.0"
+#define CtrlMask 0x1F
+
+#define VERSION "2.0"
 
 /* types/structs */
 typedef struct Node Node;
@@ -64,8 +73,11 @@ static void rmvselection(char *path, char *name);
 static int  isselected(char *path, char *name);
 static void resizedetected(void);
 static void rdrwf(void);
+static void rdrwf0(void);
+static void rdrwf1(void);
 static void loop(void);
 static void cleanup(void);
+static char *getreadablefs(double size, char *ret);
 static void movev(const Arg *arg);
 static void moveh(const Arg *arg);
 static void first(const Arg *arg);
@@ -75,6 +87,9 @@ static void selection(const Arg *arg);
 static void clearselection (const Arg *arg);
 static void selectionmanager(const Arg *arg);
 static void selectall(const Arg *arg);
+static void drawmodeswitch(const Arg *arg);
+static void middleswitch(const Arg *arg);
+static void previewswitch(const Arg *arg);
 static void directoriesfirst(const Arg *arg);
 static void hiddenfilesswitch(const Arg *arg);
 static void copyfiles(const Arg *arg);
@@ -90,7 +105,7 @@ static Node *dirlist = NULL;
 static Node *current = NULL; /* the file that the cursor is placed on */
 static Node *topofscreen = NULL;
 
-static int  maxy, maxx, sortbydirectories = 0, hiddenfiles = 0, mode = 0;
+static int  maxy, maxx, sortbydirectories = 0, hiddenfiles = 0, mode = 0, drawmode = 0, middle = 0, preview = 0;
 static char status[MAX_NAME], pattern[MAX_PATH], cwd[MAX_PATH];
 
 /* config.h */
@@ -100,8 +115,17 @@ static char status[MAX_NAME], pattern[MAX_PATH], cwd[MAX_PATH];
 void
 initialization(void)
 {
-	sortbydirectories = DIRECTORIESFIRST;
-	hiddenfiles = HIDDENFILES;
+	static int executedbefore = 0;
+
+	if (!executedbefore) {
+		sortbydirectories = DIRECTORIESFIRST;
+		hiddenfiles = HIDDENFILES;
+		drawmode = DRAWMODE;
+		middle = MIDDLE;
+		preview = PREVIEW;
+		executedbefore = 1;
+	}
+
 	initscr();
 	cbreak();
 	noecho();
@@ -111,6 +135,7 @@ initialization(void)
 	init_pair(3, DIRECTORYCOLOR, COLOR_BLACK);
 	init_pair(4, DIRECTORYCOLOR, SELECTEDCOLOR);
 	init_pair(5, COLOR_BLACK, COLOR_RED);
+	init_pair(7, COLOR_BLACK, COLOR_WHITE);
 	scrollok(stdscr, 1);
 	getmaxyx(stdscr, maxy, maxx);
 }
@@ -135,7 +160,7 @@ getcurrentfiles(void)
 		/* put all other files into dirlist first (because it's a linked list they will end up at the bottom) */
 		for (i = lendir-1; i >= 0; i--) {
 			stat(namelist[i]->d_name, &pathstat);
-			if (S_ISREG(pathstat.st_mode) && \
+			if (!S_ISDIR(pathstat.st_mode) && \
 					strcmp(namelist[i]->d_name, ".") != 0 && \
 					strcmp(namelist[i]->d_name, "..") != 0 && \
 					(hiddenfiles == 0 ? namelist[i]->d_name[0] != '.' : 1))
@@ -144,7 +169,7 @@ getcurrentfiles(void)
 		/* then put all directories except . and .. */
 		for (i = lendir-1; i >= 0; i--) {
 			stat(namelist[i]->d_name, &pathstat);
-			if (!S_ISREG(pathstat.st_mode) && \
+			if (S_ISDIR(pathstat.st_mode) && \
 					strcmp(namelist[i]->d_name, ".") != 0 && \
 					strcmp(namelist[i]->d_name, "..") != 0 && \
 					(hiddenfiles == 0? namelist[i]->d_name[0] != '.' : 1))
@@ -262,58 +287,62 @@ resizedetected(void)
 }
 
 void
-rdrwf(void) /* (r)e(dr)a(w) (f)unction */
+rdrwf(void)
 {
 	struct stat pathstat;
-	int i, currentonscreen = 0, pos = 0, numoffiles = 0, posinfiles = 0, digitsfiles, digitspos, t1;
-	Node *tmp = topofscreen;
+	struct passwd *pwd;
+	struct group *gr;
+	int i, numoffiles = 0, posinfiles = 0, digitsfiles, digitspos, t1;
+	char fileinfo[MAX_NAME], perms[11], user[MAX_NAME], group[MAX_NAME], readablefilesize[MAX_NAME], date[MAX_NAME];
+	Node *tmp = NULL;
 
-	/* display */
-	i = 0;
-
+	/* get and display the file information */
 	clear();
-	while (tmp != NULL && i < maxy-3) {
-		/* decision on wheter the element is a directory and if it is selected */
-		stat(tmp->name, &pathstat);
-		if (!S_ISREG(pathstat.st_mode)) {
-			if (isselected(cwd, tmp->name)) {
-				PRINTW(4, tmp->name, 1, 1);
-			} else {
-				PRINTW(3, tmp->name, 0, 1);
-			}
-		} else {
-			if (isselected(cwd, tmp->name)) {
-				PRINTW(2, tmp->name, 1, 0);
-			} else {
-				PRINTW(1, tmp->name, 0, 0);
-			}
-		}
+	move(0, 0);
+	if (stat(current->name, &pathstat) == 0) {
+		if (S_ISDIR(pathstat.st_mode)) perms[0] = 'd'; else perms[0] = '-';
+		if (pathstat.st_mode & S_IRUSR) perms[1] = 'r'; else perms[1] = '-';
+		if (pathstat.st_mode & S_IWUSR) perms[2] = 'w'; else perms[2] = '-';
+		if (pathstat.st_mode & S_IXUSR) perms[3] = 'x'; else perms[3] = '-';
+		if (pathstat.st_mode & S_IRGRP) perms[4] = 'r'; else perms[4] = '-';
+		if (pathstat.st_mode & S_IWGRP) perms[5] = 'w'; else perms[5] = '-';
+		if (pathstat.st_mode & S_IXGRP) perms[6] = 'x'; else perms[6] = '-';
+		if (pathstat.st_mode & S_IROTH) perms[7] = 'r'; else perms[7] = '-';
+		if (pathstat.st_mode & S_IWOTH) perms[8] = 'w'; else perms[8] = '-';
+		if (pathstat.st_mode & S_IXOTH) perms[9] = 'x'; else perms[9] = '-';
+		perms[10] = 0;
 
-		if (tmp == current) {
-			currentonscreen = 1;
-			pos = i;
-		}
-
-		tmp = tmp->next;
-		i++;
-	}
-
-	if (i == 0 || dirlist == NULL) {
-		PRINTW(5, "NO FILES IN CURRENT DIRECTORY", 0, 0);
-		currentonscreen = 1; /* to stop a possible infinite loop */
-	}
+		if ((pwd = getpwuid(pathstat.st_uid)) != NULL) strncpy(user, pwd->pw_name, MAX_NAME);
+		else snprintf(user, MAX_NAME, "%d", pathstat.st_uid);
 	
-	if (!currentonscreen) {
-		topofscreen = current;
-		rdrwf();
+		if ((gr = getgrgid(pathstat.st_gid)) != NULL) strncpy(group, gr->gr_name, MAX_NAME);
+		else snprintf(group, MAX_NAME, "%d", pathstat.st_gid);
+	
+		getreadablefs((double)pathstat.st_size, readablefilesize);
+	    strftime(date, MAX_NAME, "%Y-%B-%d %H:%M", gmtime(&(pathstat.st_ctim).tv_sec));
+	
+		snprintf(fileinfo, maxx-1, "%s %d %s %s %s %s", perms, (int)pathstat.st_nlink, user, group, readablefilesize, date);
+		PRINTW(1, 0, 0, maxx, 0, 0, fileinfo);
 	}
-	/* finally add the cursor */
-	mvaddch(pos, maxx/2+2, '<');
+
+	move(1, 0);
+	for (i = 0; i < maxx; i++) {
+		addch('-');
+	}
+
+	/* draw based on modes */
+	move(2, 0);
+	if (drawmode == 0) rdrwf0();
+	else rdrwf1();
 
 	/* print a line to separate files from the status */
-	for (i = 0; i < maxx-1; i++) {
-		mvaddch(maxy-2, i, '-');
+	move(maxy-2, 0);
+	for (i = 0; i < maxx; i++) {
+		addch('-');
 	}
+
+	/* print the status */
+	PRINTW(1, maxy, 0, maxx-1, 0, 0, status);
 
 	/* print the number of files and what number is the current file */
 	numoffiles = 0;
@@ -331,12 +360,112 @@ rdrwf(void) /* (r)e(dr)a(w) (f)unction */
 	NUMOFDIGITS(digitspos, posinfiles, t1);
 
 	mvprintw(maxy-1, maxx-digitspos-2-digitsfiles, "%d/%d", posinfiles, numoffiles);
+}
 
-	/* print the current working directory */
-	if (strlen(cwd) < maxx-digitspos-3-digitsfiles) mvprintw(maxy-1, maxx-digitspos-3-digitsfiles-strlen(cwd), cwd);
+void
+rdrwf0(void) /* (r)e(dr)a(w) (f)unction */
+{
+	/* midnight commander-like draw function
+	 * it should look something like
+	 *
+	 * this is the edge of the screen
+	 * +---------------------------------+
+	 * | current file info               |
+	 * |---------------------------------|
+	 * |f1                               |
+	 * |another file                     |
+	 * |                                 |
+	 * |---------------------------------|
+	 * | status                   cwd 1/2|
+	 * +---------------------------------+
+	 * or
+	 * +---------------------------------+
+	 * | current file info               |
+	 * |---------------------------------|
+	 * |               f1                |
+	 * |               another file      |
+	 * |                                 |
+	 * |---------------------------------|
+	 * | status                   cwd 1/2|
+	 * +---------------------------------+
+	 */
+	struct stat pathstat;
+	int i, currentonscreen = 0, pos = 0, overwrite = 0, column = 0, maxsize = maxx;
+	Node *tmp = topofscreen;
 
-	/* print the status */
-	mvprintw(maxy-1, 0, "%.*s", maxx-digitspos-7-digitsfiles-strlen(cwd), status);
+	if (middle) {
+		column = maxx/2;
+		maxsize = maxx/2+maxx%2;
+	}
+
+	i = 2;
+	while (tmp != NULL && i < maxy-2) {
+		overwrite = 0;
+
+		if (tmp == current) {
+			overwrite = 7;
+			currentonscreen = 1;
+			pos = i;
+		}
+
+		if (middle) {
+			PRINTW(MAX(overwrite, 1), i, 0, column, 0, 0, "");
+		}
+
+		/* decision on wheter the element is a directory and if it is selected */
+		stat(tmp->name, &pathstat);
+		if (S_ISDIR(pathstat.st_mode)) {
+			if (isselected(cwd, tmp->name)) {
+				PRINTW(MAX(overwrite, 4), i, column, maxsize, 1, 1, tmp->name);
+			} else {
+				PRINTW(MAX(overwrite, 3), i, column, maxsize, 0, 1, tmp->name);
+			}
+		} else {
+			if (isselected(cwd, tmp->name)) {
+				PRINTW(MAX(overwrite, 2), i, column, maxsize, 1, 0, tmp->name);
+			} else {
+				PRINTW(MAX(overwrite, 1), i, column, maxsize, 0, 0, tmp->name);
+			}
+		}
+
+
+		tmp = tmp->next;
+		i++;
+	}
+
+	if (i == 0 || dirlist == NULL) {
+		PRINTW0(5, "NO FILES IN CURRENT DIRECTORY", 0, 0);
+		currentonscreen = 1; /* to stop a possible infinite loop */
+	}
+	
+	if (!currentonscreen) {
+		topofscreen = current;
+		rdrwf();
+	}
+
+}
+
+void
+rdrwf1(void)
+{
+	/* the ranger-like draw function
+	 * ratio hardcoded to be 1,1,2
+	 * it should look something like:
+     * 
+     * this is the edge of the screen
+	 * +---------------------------------+
+	 * | current file information        |
+	   |---------------------------------|
+	 * | i f1   i f4      preview        |
+	 * | i f2   i f5                     |
+	 * | i f3   i f6                     |
+	 * |        i f7                     |
+	 * |                                 |
+	 * |---------------------------------|
+	 * |status                  cwd   1/4|
+	 * +---------------------------------+
+	 */
+
 }
 
 void
@@ -395,6 +524,23 @@ cleanup(void)
 	fclose(fp);
 }
 
+char *
+getreadablefs(double size, char *ret)
+{
+	int i = 0;
+	char orders[4] = "BKMG";
+
+	ret[0] = 0;
+
+	while (size > 1024 && i < 3) {
+		size /= 1024;
+		i++;
+	}
+
+	snprintf(ret, MAX_NAME, "%.2f%c", size, orders[i]);
+	return ret;
+}
+
 void
 movev(const Arg *arg)
 {
@@ -447,7 +593,7 @@ moveh(const Arg *arg)
 		chdir("..");
 	} else {
 		stat(current->name, &pathstat);
-		if (!S_ISREG(pathstat.st_mode)) {
+		if (S_ISDIR(pathstat.st_mode)) {
 			chdir(current->name);
 		} else {
 			return;
@@ -569,6 +715,34 @@ selectall(const Arg *arg)
 			append_ll(&selhead, current->path, current->name);
 		}
 	}
+}
+
+
+void
+drawmodeswitch(const Arg *arg)
+{
+	drawmode = !drawmode;
+
+	if (drawmode == 0) strncpy(status, "draw mode set to midnight commander-like mode", MAX_NAME);
+	else strncpy(status, "drawmode set to ranger-like mode", MAX_NAME);
+}
+
+void
+middleswitch(const Arg *arg)
+{
+	middle = !middle;
+
+	if (middle == 0) strncpy(status, "drawing alligned to the left for the midnight commander mode", MAX_NAME);
+	else strncpy(status, "drawing in the middle for the midnight commander mode", MAX_NAME);
+}
+
+void
+previewswitch(const Arg *arg)
+{
+	preview = !preview;
+
+	if (preview == 0) strncpy(status, "preview is turned off", MAX_NAME);
+	else strncpy(status, "preview is turned on", MAX_NAME);
 }
 
 void
@@ -1047,6 +1221,7 @@ main(int argc, char *argv[])
 		if (strcmp(argv[1], "--version") == 0) {
 			printf("stuifm-%s\n", VERSION);
 			return 0;
+		} else if (strcmp(argv[1], "--config") == 0) {
 		} else if(strcmp(argv[1], "--help") == 0) {
 			printf("use: stuifm [--version|--help] or stuifm [directory]\n");
 			printf("check the README.md for a tutorial\n");
