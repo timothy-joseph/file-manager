@@ -56,7 +56,7 @@ static Key keys[] = {
     {'~' & CtrlMask, previewswitch,         {0}      },
     
     /* sorting */
-    {'-' & CtrlMask, directoriesfirst,      {0}      },
+    {'-',            directoriesfirst,      {0}      },
     {'h' & CtrlMask, hiddenfilesswitch,     {0}      },
     {'.',            hiddenfilesswitch,     {0}      },
                                   	     
