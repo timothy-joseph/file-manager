@@ -14,6 +14,8 @@
 #include <linux/limits.h>
 
 /* macros */
+#define COMMAND_MAX 100000
+
 #define LENGTH(X) (sizeof(X) / sizeof(X[0]))
 
 #define PRINTW(COLOURPAIR, LINE, COLUMN, MAXSIZE, ISSEL, ISDIR, STR) attron(COLOR_PAIR((COLOURPAIR))); \
@@ -38,6 +40,24 @@
 
 #define CtrlMask 0x1F
 
+/* the following are masks are used to interact with the executecommand
+ * if you don't want to use any of them, put a .i = 0 along side the command
+ * the first three are pretty self-explanatory, but the last three are as follows:
+ * CdLastLineMask -> chdir to the last line of the output of the command
+ * SearchLastLineMask -> searches using the pattern showed on the last line of the output of the command
+ * NoSaveSearchMask -> doesn't save the pattern used with the SearchLastLineMask
+ *
+ * in order to use multiple just put a bitwise or between them (eg: .i = NoConfirmationMask|NoReloadMask)
+ */
+
+#define NoConfirmationMask 0b1
+#define NoReloadMask 0b10
+#define NoEndWinMask 0b101
+#define NoEndWinMaskBACKEND 0b100
+#define CdLastLineMask 0b1000
+#define SearchLastLineMask 0b10000
+#define NoSaveSearchMask 0b100000
+
 #define VERSION "2.0"
 
 /* types/structs */
@@ -48,8 +68,8 @@ struct Node {
 	Node *next, *prev;
 };
 
-typedef union Arg Arg;
-union Arg {
+typedef struct Arg Arg;
+struct Arg {
 	int i;
 	void *v;
 };
@@ -70,8 +90,9 @@ static void rmvselection(char *path, char *name);
 static int  isselected(char *path, char *name);
 static void resizedetected(void);
 static void rdrwf(void);
-static void rdrwf0(void);
-static void rdrwf1(void);
+static void rdrwfmaincolumn(void);
+static void rdrwfsecondarycolumn(void);
+static void rdrwfhelper(void);
 static void loop(void);
 static void cleanup(void);
 static char *getreadablefs(double size, char *ret);
@@ -82,16 +103,9 @@ static void last(const Arg *arg);
 static void topofscreenscroll(const Arg *arg);
 static void selection(const Arg *arg);
 static void clearselection (const Arg *arg);
-static void selectionmanager(const Arg *arg);
 static void selectall(const Arg *arg);
-static void drawmodeswitch(const Arg *arg);
-static void middleswitch(const Arg *arg);
-static void previewswitch(const Arg *arg);
 static void directoriesfirst(const Arg *arg);
 static void hiddenfilesswitch(const Arg *arg);
-static void copyfiles(const Arg *arg);
-static void movefiles(const Arg *arg);
-static void normrename(const Arg *arg);
 static void brename(const Arg *arg);
 static void search(const Arg *arg);
 static void executecommand(const Arg *arg);
@@ -102,7 +116,7 @@ static Node *dirlist = NULL;
 static Node *current = NULL; /* the file that the cursor is placed on */
 static Node *topofscreen = NULL;
 
-static int  maxy, maxx, sortbydirectories = 0, hiddenfiles = 0, mode = 0, drawmode = 0, middle = 0, preview = 0;
+static int  maxy, maxx, sortbydirectories = 0, hiddenfiles = 0;
 static char status[NAME_MAX], pattern[PATH_MAX], cwd[PATH_MAX];
 
 /* config.h */
@@ -117,9 +131,6 @@ initialization(void)
 	if (!executedbefore) {
 		sortbydirectories = DIRECTORIESFIRST;
 		hiddenfiles = HIDDENFILES;
-		drawmode = DRAWMODE;
-		middle = MIDDLE;
-		preview = PREVIEW;
 		executedbefore = 1;
 	}
 
@@ -329,8 +340,9 @@ rdrwf(void)
 
 	/* draw based on modes */
 	move(2, 0);
-	if (drawmode == 0) rdrwf0();
-	else rdrwf1();
+
+	/* column drawing */
+	rdrwfhelper();
 
 	/* print a line to separate files from the status */
 	move(maxy-2, 0);
@@ -360,116 +372,12 @@ rdrwf(void)
 	if (maxx-digitspos-3-digitsfiles > 0) mvprintw(maxy-1, maxx-digitspos-3-digitsfiles, " %d/%d", posinfiles, numoffiles);
 }
 
-void
-rdrwf0(void) /* (r)e(dr)a(w) (f)unction */
-{
-	/* midnight commander-like draw function
-	 * it should look something like
-	 *
-	 * this is the edge of the screen
-	 * +---------------------------------+
-	 * | current file info           cwd |
-	 * |---------------------------------|
-	 * |f1                               |
-	 * |another file                     |
-	 * |                                 |
-	 * |---------------------------------|
-	 * | status                       1/2|
-	 * +---------------------------------+
-	 * or
-	 * +---------------------------------+
-	 * | current file info           cwd |
-	 * |---------------------------------|
-	 * |               f1                |
-	 * |               another file      |
-	 * |                                 |
-	 * |---------------------------------|
-	 * | status                       1/2|
-	 * +---------------------------------+
-	 */
-	struct stat pathstat;
-	int i, currentonscreen = 0, overwrite = 0, column = 0, maxsize = maxx;
-	Node *tmp = topofscreen;
-
-	if (middle) {
-		column = maxx/2;
-		maxsize = maxx/2+maxx%2;
-	}
-
-	i = 2;
-	while (tmp != NULL && i < maxy-2) {
-		overwrite = 0;
-
-		if (tmp == current) {
-			overwrite = 7;
-			currentonscreen = 1;
-		}
-
-		if (middle) {
-			PRINTW(MAX(overwrite, 1), i, 0, column, 0, 0, "");
-		}
-
-		/* decision on wheter the element is a directory and if it is selected */
-		if (stat(tmp->name, &pathstat) == 0 && S_ISDIR(pathstat.st_mode)) {
-			if (isselected(cwd, tmp->name)) {
-				PRINTW(MAX(overwrite, 4), i, column, maxsize, 1, 1, tmp->name);
-			} else {
-				PRINTW(MAX(overwrite, 3), i, column, maxsize, 0, 1, tmp->name);
-			}
-		} else {
-			if (isselected(cwd, tmp->name)) {
-				PRINTW(MAX(overwrite, 2), i, column, maxsize, 1, 0, tmp->name);
-			} else {
-				PRINTW(MAX(overwrite, 1), i, column, maxsize, 0, 0, tmp->name);
-			}
-		}
-
-
-		tmp = tmp->next;
-		i++;
-	}
-
-	if (i == 2 || dirlist == NULL) {
-		if (middle) {
-			PRINTW(5, i, 0, column, 0, 0, "");
-		}
-		PRINTW(5, i, column, maxsize, 0, 0, "NO FILES IN CURRENT DIRECTORY");
-		currentonscreen = 1; /* to stop a possible infinite loop */
-	}
-	
-	if (!currentonscreen) {
-		topofscreen = current;
-		rdrwf();
-	}
-}
 
 void
-rdrwf1(void)
+rdrwfhelper(void)
 {
-	/* the ranger-like draw function
-	 * ratio hardcoded to be 1,1,1
-	 * it should look something like:
-     * 
-	 * THIS FUNCTION IS A COMPLETE MESS AND I KNOW IT CAN BE DONE BETTER;
-	 * BUT IT IS FUNCTIONAL (HOPEFULLY). I WILL (MAYBE) COME BACK TO REDO IT BETTER
-	 * AT ANOTHER TIME OR EVEN JUST DELETE IT IF I FIND MYSELF USING THE MIDNIGHT COMMANDER
-	 * MODE MORE
-	 *
-     * this is the edge of the screen
-	 * +---------------------------------+
-	 * | current file information    cwd |
-	 * |---------------------------------|
-	 * | i f1   i f4      preview        |
-	 * | i f2   i f5                     |
-	 * | i f3   i f6                     |
-	 * |        i f7                     |
-	 * |                                 |
-	 * |---------------------------------|
-	 * |status                        1/4|
-	 * +---------------------------------+
-	 */
 	int i, j, size = (maxx-2)/3, lendir, currentonscreen = 0, overwrite = 0;
-	char prevpath[PATH_MAX], *p, statpath[PATH_MAX];
+	char prevpath[PATH_MAX], *p, statpath[PATH_MAX], name[NAME_MAX];
 	struct dirent **namelist;
 	struct stat pathstat;
 	Node *tmp = topofscreen;
@@ -482,7 +390,6 @@ rdrwf1(void)
 
 	if (realpath("..", prevpath) == NULL) prevpath[0] = 0;
 
-	char name[NAME_MAX];
 	if (sortbydirectories) {
 		i = 2;
 		/* draw first the directories */
@@ -495,7 +402,6 @@ rdrwf1(void)
 					(hiddenfiles == 0 ? name[0] != '.' : 1)) {
 				
 				p = strrchr(cwd, '/');
-				puts(p);
 				if (p == NULL) p = cwd+strlen(cwd);
 				else p += 1;
 
@@ -539,7 +445,6 @@ rdrwf1(void)
 					(hiddenfiles == 0 ? name[0] != '.' : 1)) {
 
 				p = strrchr(cwd, '/');
-				puts(p);
 				if (p == NULL) p = cwd+strlen(cwd);
 				else p += 1;
 
@@ -614,7 +519,7 @@ skip0:
 	 * i need to do the mess i did at column 1 again...
 	 */
 	char nextpath[PATH_MAX];
-	if (stat(current->name, &pathstat) != 0 || !S_ISDIR(pathstat.st_mode)) goto skiptopreview;
+	if (stat(current->name, &pathstat) != 0 || !S_ISDIR(pathstat.st_mode)) return;
 
 	lendir = scandir(current->name, &namelist, 0, alphasort);
 	if (lendir <= 0) return;
@@ -633,16 +538,15 @@ skip0:
 					(hiddenfiles == 0 ? name[0] != '.' : 1)) {
 				
 				p = strrchr(cwd, '/');
-				puts(p);
 				if (p == NULL) p = cwd+strlen(cwd);
 				else p += 1;
 
 				if (i == 2) {
-					PRINTW(7, i, 2*size, maxx-2*size, isselected(nextpath, name), 1, name);
+					PRINTW(7, i, 2*size, maxx-2*size-1, isselected(nextpath, name), 1, name);
 				} else if (isselected(nextpath, name)) {
-					PRINTW(4, i, 2*size, maxx-2*size, 1, 1, name);
+					PRINTW(4, i, 2*size, maxx-2*size-1, 1, 1, name);
 				} else {
-					PRINTW(3, i, 2*size, maxx-2*size, 0, 1, name);
+					PRINTW(3, i, 2*size, maxx-2*size-1, 0, 1, name);
 				}
 				i++;
 			}
@@ -657,9 +561,9 @@ skip0:
 					(hiddenfiles == 0 ? name[0] != '.' : 1)) {
 
 				if (isselected(nextpath, name)) {
-					PRINTW(2, i, 2*size, maxx-2*size, 1, 1, name);
+					PRINTW(2, i, 2*size, maxx-2*size-1, 1, 1, name);
 				} else {
-					PRINTW(1, i, 2*size, maxx-2*size, 0, 1, name);
+					PRINTW(1, i, 2*size, maxx-2*size-1, 0, 1, name);
 				}
 				i++;
 			}
@@ -677,7 +581,6 @@ skip0:
 					(hiddenfiles == 0 ? name[0] != '.' : 1)) {
 
 				p = strrchr(cwd, '/');
-				puts(p);
 				if (p == NULL) p = cwd+strlen(cwd);
 				else p += 1;
 
@@ -688,15 +591,15 @@ skip0:
 
 				if (stat(statpath, &pathstat) == 0 && S_ISDIR(pathstat.st_mode)) {
 					if (isselected(nextpath, name)) {
-						PRINTW(MAX(overwrite, 4), i, 2*size, maxx-2*size, 1, 1, name);
+						PRINTW(MAX(overwrite, 4), i, 2*size, maxx-2*size-1, 1, 1, name);
 					} else {
-						PRINTW(MAX(overwrite, 3), i, 2*size, maxx-2*size, 0, 1, name);
+						PRINTW(MAX(overwrite, 3), i, 2*size, maxx-2*size-1, 0, 1, name);
 					}
 				} else {
 					if (isselected(nextpath, name)) {
-						PRINTW(MAX(overwrite, 2), i, 2*size, maxx-2*size, 1, 0, name);
+						PRINTW(MAX(overwrite, 2), i, 2*size, maxx-2*size-1, 1, 0, name);
 					} else {
-						PRINTW(MAX(overwrite, 1), i, 2*size, maxx-2*size, 0, 0, name);
+						PRINTW(MAX(overwrite, 1), i, 2*size, maxx-2*size-1, 0, 0, name);
 					}
 				}
 
@@ -707,9 +610,59 @@ skip0:
 	}
 	free(namelist);
 	return;
+}
 
-skiptopreview:
-	return;
+void
+rdrwfmaincolumn(void) /* (r)e(dr)a(w) (f)unction */
+{
+	/* draws the main column (current column) */
+	struct stat pathstat;
+	int i, currentonscreen = 0, overwrite = 0, column = 0, maxsize = maxx;
+	Node *tmp = topofscreen;
+
+	i = 2;
+	while (tmp != NULL && i < maxy-2) {
+		overwrite = 0;
+
+		if (tmp == current) {
+			overwrite = 7;
+			currentonscreen = 1;
+		}
+
+		/* decision on wheter the element is a directory and if it is selected */
+		if (stat(tmp->name, &pathstat) == 0 && S_ISDIR(pathstat.st_mode)) {
+			if (isselected(cwd, tmp->name)) {
+				PRINTW(MAX(overwrite, 4), i, column, maxsize, 1, 1, tmp->name);
+			} else {
+				PRINTW(MAX(overwrite, 3), i, column, maxsize, 0, 1, tmp->name);
+			}
+		} else {
+			if (isselected(cwd, tmp->name)) {
+				PRINTW(MAX(overwrite, 2), i, column, maxsize, 1, 0, tmp->name);
+			} else {
+				PRINTW(MAX(overwrite, 1), i, column, maxsize, 0, 0, tmp->name);
+			}
+		}
+
+
+		tmp = tmp->next;
+		i++;
+	}
+
+	if (i == 2 || dirlist == NULL) {
+		PRINTW(5, i, column, maxsize, 0, 0, "NO FILES IN CURRENT DIRECTORY");
+		currentonscreen = 1; /* to stop a possible infinite loop */
+	}
+	
+	if (!currentonscreen) {
+		topofscreen = current;
+		rdrwf();
+	}
+}
+
+void
+rdrwfsecondarycolumn(void)
+{
 }
 
 void
@@ -725,24 +678,11 @@ loop(void)
 
 		status[0] = 0;
 		getcwd(cwd, PATH_MAX);
-		for (i = 0; i < LENGTH(keys); i++)
+		for (i = 0; i < LENGTH(keys); i++) {
 			if (keys[i].chr == c) {
-				if (mode == 1) { /* selection manager
-				                  * check to see if the function is compatible
-                                  */
-					if(keys[i].func == selectionmanager || \
-							keys[i].func == movev || \
-							keys[i].func == brename || \
-					   		keys[i].func == search) {
-						keys[i].func(&keys[i].arg);
-					} else {
-						strncpy(status, "exit selection manager", NAME_MAX);
-					}
-
-				} else {
-					keys[i].func(&keys[i].arg);
-				}
+				keys[i].func(&keys[i].arg);
 			}
+		}
 		rdrwf();
 	}
 }
@@ -831,7 +771,7 @@ moveh(const Arg *arg)
 			tosearch = 1;
 			strncpy(oldpattern, pattern, PATH_MAX);
 			strncpy(pattern, p+1, PATH_MAX);
-			printf(pattern);
+			// printf(pattern);
 		}
 
 		chdir("..");
@@ -932,24 +872,6 @@ clearselection(const Arg *arg)
 }
 
 void
-selectionmanager(const Arg *arg)
-{
-	mode = !mode;
-	
-	if (mode == 1) {
-		free_ll(&dirlist);
-		dirlist = selhead;
-		topofscreen = selhead;
-		current = selhead;
-		strncpy(status, "entered selection manager", NAME_MAX);
-	} else {
-		/* could also be done by saving them */
-		strncpy(status, "exited selection manager", NAME_MAX);
-		getcurrentfiles();
-	}
-}
-
-void
 selectall(const Arg *arg)
 {
 	Node *tmp = dirlist;
@@ -958,34 +880,6 @@ selectall(const Arg *arg)
 			append_ll(&selhead, current->path, current->name);
 		}
 	}
-}
-
-
-void
-drawmodeswitch(const Arg *arg)
-{
-	drawmode = !drawmode;
-
-	if (drawmode == 0) strncpy(status, "draw mode set to midnight commander-like mode", NAME_MAX);
-	else strncpy(status, "draw mode set to ranger-like mode", NAME_MAX);
-}
-
-void
-middleswitch(const Arg *arg)
-{
-	middle = !middle;
-
-	if (middle == 0) strncpy(status, "drawing alligned to the left for the midnight commander mode", NAME_MAX);
-	else strncpy(status, "drawing in the middle for the midnight commander mode", NAME_MAX);
-}
-
-void
-previewswitch(const Arg *arg)
-{
-	preview = !preview;
-
-	if (preview == 0) strncpy(status, "preview is turned off", NAME_MAX);
-	else strncpy(status, "preview is turned on", NAME_MAX);
 }
 
 void
@@ -1009,198 +903,6 @@ hiddenfilesswitch(const Arg *arg)
 	} else {
 		strncpy(status, "hiding hidden files", NAME_MAX);
 	}
-	getcurrentfiles();
-}
-
-void
-copyfiles(const Arg *arg)
-{
-	char oldpath[PATH_MAX], input[NAME_MAX], chr;
-	int replaceall, copiedall = 1, ok;
-	FILE *ffrom, *fto;
-	struct stat s = {0};
-	Node *tmp = selhead;
-
-	if (tmp == NULL) {
-		strncpy(status, "selection is empty", PATH_MAX);
-		return;
-	}
-
-	if (arg) replaceall = arg->i; /* 0 means not set, -1 means never replace and 1 means always replace */
-	else replaceall = 0;
-
-	endwin();
-
-	while (tmp != NULL) {
-		snprintf(oldpath, PATH_MAX, "%s/%s", tmp->path, tmp->name);
-
-		ok = 1;
-		if ((replaceall == 0 || replaceall == -1) && stat(tmp->name, &s) == 0) {
-			if (replaceall == 0) {
-				printf("a file with the name %s already exists in the current directory, do you want to repalce it [yes/all/No/Stop asking (no)]: ");
-				fgets(input, NAME_MAX, stdin);
-
-				switch (input[0]) {
-				case 'A': /* fallthrough */
-				case 'a': replaceall = 1;
-				          /* fallthrough */
-				case 'Y': /* fallthrough */
-				case 'y': ok = 1;
-				          break;
-				case 'S': /* fallthrough */
-				case 's': replaceall = -1;
-				          /* fallthrough */
-				case 'N': /* fallthrough */
-				case 'n': /* fallthrough */
-				default: ok = 0;
-				}
-			} else if (replaceall == -1) {
-				ok = 0;
-			}
-		}
-
-		if (ok) {
-			ffrom = fopen(oldpath, "r");
-			fto = fopen(tmp->name, "w");
-
-			if (ffrom == NULL || fto == NULL) {
-				printf("error on opening one of the files for reading %s\n", oldpath);
-				copiedall = 0;
-			} else {
-				while ((chr = fgetc(ffrom)) != EOF) {
-					fputc(chr, fto);
-				}
-				printf("copied %s/%s to %s/%s\n", tmp->path, tmp->name, cwd, tmp->name);
-			}
-
-			if (ffrom != NULL) fclose(ffrom);
-			if (fto != NULL) fclose(fto);
-		} else {
-			copiedall = 0;
-			printf("not allowed to copy file %s\n", oldpath);
-		}
-
-		tmp = tmp->next;
-	}
-
-	clearselection(NULL);
-	initialization();
-	getcurrentfiles();
-	if (copiedall) strncpy(status, "copied all files", NAME_MAX);
-	else strncpy(status, "copied some of the files", NAME_MAX);
-}
-
-void
-movefiles(const Arg *arg)
-{
-	char oldpath[PATH_MAX], input[NAME_MAX];
-	int movedall = 1, replaceall, ok;
-	struct stat s = {0};
-	Node *tmp = selhead;
-
-	if (tmp == NULL) {
-		strncpy(status, "selection is empty", PATH_MAX);
-		return;
-	}
-
-	if (arg) replaceall = arg->i; /* 0 means not set, -1 means never replace and 1 means always replace */
-	else replaceall = 0;
-
-	/* end the window so we can get standard input/output */
-	endwin();
-
-	while (tmp != NULL) {
-		snprintf(oldpath, PATH_MAX, "%s/%s", tmp->path, tmp->name);
-
-		ok = 1;
-		if ((replaceall == 0 || replaceall == -1) && stat(tmp->name, &s) == 0) {
-			if (replaceall == 0) {
-				printf("a file with the name %s already exists in the current directory, do you want to repalce it [yes/all/No/Stop asking (no)]: ");
-				fgets(input, NAME_MAX, stdin);
-
-				switch (input[0]) {
-				case 'A': /* fallthrough */
-				case 'a': replaceall = 1;
-				          /* fallthrough */
-				case 'Y': /* fallthrough */
-				case 'y': ok = 1;
-				          break;
-				case 'S': /* fallthrough */
-				case 's': replaceall = -1;
-				          /* fallthrough */
-				case 'N': /* fallthrough */
-				case 'n': /* fallthrough */
-				default: ok = 0;
-				}
-			} else if (replaceall == -1) {
-				ok = 0;
-			}
-		}
-
-
-		if (ok) {
-			if (rename(oldpath, tmp->name) != 0) {
-				printf("error on file %s\n", oldpath); /* the exact error with errno is not really relevant */
-				movedall = 0;
-			} else {
-				printf("moved %s/%s to %s/%s\n", tmp->path, tmp->name, cwd, tmp->name);
-			}
-		} else {
-			printf("not allowed to move file %s\n", oldpath);
-			movedall = 0;
-		}
-
-		tmp = tmp->next;
-	}
-
-	/* clear the selection and reinit*/
-	clearselection(NULL);
-	initialization();
-	getcurrentfiles();
-	if (movedall) strncpy(status, "moved all files", NAME_MAX);
-	else strncpy(status, "moved some of the files", NAME_MAX);
-}
-
-void
-normrename(const Arg *arg)
-{
-	char newname[PATH_MAX], input[NAME_MAX];
-	struct stat s = {0};
-	int ok, replace;
-
-	if (arg) replace = arg->i;
-	else replace = 0;
-
-	endwin();
-
-	printf("the name of the new file: ");
-	fgets(newname, PATH_MAX, stdin);
-	if (newname[strlen(newname)-1] == '\n') newname[strlen(newname)-1] = 0; /* strip '\n' */
-
-	ok = 1;
-	if (replace == 0 && stat(newname, &s) == 0) {
-		printf("there is already a file with the name %s in this directory, do you want to replace it: [y/N]: ");
-		fgets(input, NAME_MAX, stdin);
-
-		if (input[0] != 'y' && input[0] != 'y') { /* input[0] is anything other than y or Y */
-			ok = 0;
-		}
-	}
-
-	if (replace == 1) ok = 1;
-	if (replace == -1) ok = 0;
-
-	if (ok) {
-		if (rename(current->name, newname) == 0) {
-			printf("file renamed\n");
-			strncpy(status, "file renamed", NAME_MAX);
-		} else {
-			printf("file not renamed\n");
-			strncpy(status, "file not renamed", NAME_MAX);
-		}
-	}
-
-	initialization();
 	getcurrentfiles();
 }
 
@@ -1382,11 +1084,11 @@ search(const Arg *arg)
 void
 executecommand(const Arg *arg)
 {
-	char input[NAME_MAX], inputcommand[PATH_MAX], command[PATH_MAX], toconcat[PATH_MAX];
+	char input[NAME_MAX], inputcommand[PATH_MAX], command[COMMAND_MAX], toconcat[PATH_MAX];
 	int i, k = 0;
 	Node *tmp = NULL;
 	
-	endwin();
+	if (!(arg->i & NoEndWinMaskBACKEND)) endwin();
 
 	if (!arg || !arg->v) {
 		printf("your command: ");
@@ -1402,19 +1104,32 @@ executecommand(const Arg *arg)
 	 * %p means the current working directory
 	 */
 	
-	for (i = 0; inputcommand[i] != 0 && k < PATH_MAX - 1; i++) {
+	for (i = 0; inputcommand[i] != 0 && k < PATH_MAX - 1 && i < COMMAND_MAX; i++) {
 		if (inputcommand[i] == '%') {
-			if (inputcommand[i+1] == 's') {
+			if (inputcommand[i+1] == '%') {
+				command[k] = '%';
+				k++;
+				i++;
+			} else if (inputcommand[i+1] == 'c') {
+				strncat(command, current->name, COMMAND_MAX-strlen(current->name)-1);
+				k = strlen(command);
+				i++;
+			} else if (inputcommand[i+1] == 'C') {
+				snprintf(toconcat, PATH_MAX, "%s/%s", current->path, current->name);
+				strncat(command, current->name, COMMAND_MAX-strlen(toconcat)-1);
+				k = strlen(command);
+				i++;
+			} else if (inputcommand[i+1] == 's') {
 				if (selhead == NULL) {
 					strncpy(status, "selection is empty", NAME_MAX);
-					return;
+					goto skipexecutecommand;
 				}
 				tmp = selhead;
 
 				while (tmp) {
 					if (tmp->next) snprintf(toconcat, PATH_MAX, "%s/%s ", tmp->path, tmp->name);
 					else snprintf(toconcat, PATH_MAX, "%s/%s", tmp->path, tmp->name);
-					strncat(command, toconcat, PATH_MAX-strlen(toconcat)-1);
+					strncat(command, toconcat, COMMAND_MAX-strlen(toconcat)-1);
 					toconcat[0] = 0;
 					k = strlen(command);
 
@@ -1422,13 +1137,12 @@ executecommand(const Arg *arg)
 				}
 				i++;
 
-			} else if (inputcommand[i+1] == 'p') {
-				strncat(command, cwd, PATH_MAX-strlen(cwd)-1);
-				k = strlen(command);
+			} else if (inputcommand[i+1] == 'S') {
+				command[k] = '%';
+				k++;
+				command[k+1] = 'S';
+				k++;
 				i++;
-			} else {
-				strncat(command, current->name, PATH_MAX-strlen(current->name)-1);
-				k = strlen(command);
 			}
 		} else {
 			command[k] = inputcommand[i];
@@ -1437,22 +1151,32 @@ executecommand(const Arg *arg)
 		}
 	}
 
-	printf("are you sure you want to execute the command '%s' [yes/No]: ", command);
-	fgets(input, NAME_MAX, stdin);
+	/* TODO: remove confirmation once i'm sure everything works fine */
+	if (!(arg->i & NoConfirmationMask)) printf("are you sure you want to execute the command '%s' [yes/No]: ", command);
+	if (!(arg->i & NoConfirmationMask)) fgets(input, NAME_MAX, stdin);
 
-
-	if (input[0] == 'y' || input[0] == 'Y') {
+	if (arg->i & NoConfirmationMask || input[0] == 'y' || input[0] == 'Y') {
+		/* TODO: %S -> run a command for each of the elements in the selection */
 		system(command);
-		snprintf(status, NAME_MAX, "executed the command '%s'", command);
-	} else {
+		if (!(arg->i & NoEndWinMaskBACKEND)) snprintf(status, NAME_MAX, "executed the command '%s'", command);
+	} else if (!(arg->i & NoEndWinMaskBACKEND)) {
 		snprintf(status, NAME_MAX, "didn't execute the command '%s'", command);
 	}
 
-	printf("press any key to continue\n");
-	fgetc(stdin);
+skipexecutecommand:
+	if (!(arg->i & NoEndWinMaskBACKEND)) printf("press any key to continue\n");
+	if (!(arg->i & NoEndWinMaskBACKEND)) fgetc(stdin);
 
-	initialization();
-	getcurrentfiles();
+	if (!(arg->i & NoEndWinMaskBACKEND)) initialization();
+	if (!(arg->i & NoReloadMask)) getcurrentfiles();
+
+	if (arg->i & SearchLastLineMask) {
+	/* <++> */
+	}
+
+	if (arg->i & CdLastLineMask) {
+	/* <++> */
+	}
 }
 
 
