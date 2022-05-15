@@ -1,8 +1,10 @@
+/* TODO: restore the current file to be as close to the old current file before a file execution */
 /* See LICENSE file for license details */
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #include <string.h>
 #include <ncurses.h>
@@ -49,6 +51,7 @@
 #define CdLastLineMask 0b1000
 #define SearchLastLineMask 0b10000
 #define NoSaveSearchMask 0b100000
+#define NoWaitUntilKeyPress 0b1000000
 
 #define VERSION "2.0"
 
@@ -91,6 +94,7 @@ static void rdrwfsecondarycolumn(char *comingfrom, char *pathtodraw, int column,
 static void rdrwfhelper(void);
 static int  iscurrentonscreen(void);
 static char *getreadablefs(double size, char *ret);
+static char *escapestring(char *str, size_t n);
 static void loop(void);
 static void cleanup(void);
 static void movev(const Arg *arg);
@@ -104,7 +108,6 @@ static void clearselection (const Arg *arg);
 static void selectall(const Arg *arg);
 static void directoriesfirst(const Arg *arg);
 static void hiddenfilesswitch(const Arg *arg);
-static void brename(const Arg *arg);
 static void search(const Arg *arg);
 static void executecommand(const Arg *arg);
 
@@ -334,6 +337,7 @@ rdrwf(void)
 	}
 
 	/* print the status */
+	escapestring(status, NAME_MAX);
 	PRINTW(1, maxy-1, 0, maxx-1, 0, 0, status);
 
 
@@ -348,7 +352,7 @@ void
 rdrwfhelper(void)
 {
 	int i, size = maxx, currentcolumn = 0, currentposition = 1, ratiossum = 0, overwritesize = 0;
-	char prevpath[PATH_MAX] = "", nextpath[NAME_MAX] = "", resolvedpath[PATH_MAX], highlightedname[NAME_MAX], tmpstr[PATH_MAX], *p, *pnext;
+	char prevpath[PATH_MAX] = "", nextpath[PATH_MAX] = "", resolvedpath[PATH_MAX], highlightedname[NAME_MAX], tmpstr[PATH_MAX], *p, *pnext;
 	struct stat pathstat;
 
 	for (i = 0; drawratios[cratio][i]; i++) {
@@ -589,6 +593,49 @@ getreadablefs(double size, char *ret)
 	return ret;
 }
 
+char*
+escapestring(char *str, size_t n)
+{
+	char escapechars[256] = {0};
+	int i, k = 0;
+	char *buf = (char *)malloc(n);
+
+	escapechars['\a'] = 1;
+	escapechars['\b'] = 1;
+	escapechars['\f'] = 1;
+	escapechars['\n'] = 1;
+	escapechars['\r'] = 1;
+	escapechars['\t'] = 1;
+	escapechars['\v'] = 1;
+	escapechars['\\'] = 1;
+	escapechars['\?'] = 1;
+
+	for (i = 0; str && i < n && k < n; i++) {
+		if (escapechars[str[i]]) {
+			buf[k++] = '\\';
+			
+			switch (str[i]) {
+				case '\a': buf[k++] = 'a'; break;
+				case '\b': buf[k++] = 'b'; break;
+				case '\f': buf[k++] = 'f'; break;
+				case '\n': buf[k++] = 'n'; break;
+				case '\r': buf[k++] = 'r'; break;
+				case '\t': buf[k++] = 't'; break;
+				case '\v': buf[k++] = 'v'; break;
+				case '\\': buf[k++] = '\\'; break;
+				case '\?': buf[k++] = '?'; break;
+			}
+		} else {
+			buf[k++] = str[i];
+		}
+	}
+	buf[k] = 0;
+
+	strncpy(str, buf, n);
+	free(buf);
+	return str;
+}
+
 void
 loop(void)
 {
@@ -657,7 +704,7 @@ moveh(const Arg *arg)
 {
 	struct stat pathstat;
 	char oldpattern[PATH_MAX], *p;
-	Arg searcharg = {.i = 1};
+	Arg searcharg = {.i = 0};
 	int tosearch = 0;
 
 	memset(oldpattern, 0, sizeof(oldpattern));
@@ -794,71 +841,6 @@ hiddenfilesswitch(const Arg *arg)
 	getcurrentfiles();
 }
 
-//void
-//brename(const Arg *arg)
-//{
-//	/* this one is done with coreutils */
-//	/* don't do anything if nothing is selected */
-//	if (selhead == NULL) return;
-//
-//	/* endwin */
-//	endwin();
-//
-//	Node *tmp = selhead;
-//	char command[PATH_MAX], newname[NAME_MAX], input[NAME_MAX];
-//
-//	FILE *fp = NULL, *gp = NULL;
-//	if ((fp = fopen(BRENAME_TXT_PATH, "w+")) == NULL)
-//		return;
-//
-//	/* get all of the names into one file */
-//	while (tmp != NULL) {
-//		fprintf(fp, "%s\n", tmp->name);
-//		tmp = tmp->next;
-//	}
-//	fclose(fp);
-//
-//	/* let the user edit it */
-//	sprintf(command, "$EDITOR %s", BRENAME_TXT_PATH);
-//	system(command);
-//
-//	/* build rename script */
-//	if ((fp = fopen(BRENAME_TXT_PATH, "r")) == NULL)
-//		return;
-//	if ((gp = fopen(BRENAME_SCRIPT_PATH, "w")) == NULL)
-//		return;
-//
-//	fprintf(gp, "#!/bin/bash\n");
-//
-//	tmp = selhead;
-//
-//	/* get the new names line by line */
-//	while (tmp != NULL) {
-//		fgets(newname, NAME_MAX, fp);
-//		fprintf(gp, "mv -i %s/%s %s/%s", tmp->path, tmp->name, tmp->path, newname);
-//		tmp = tmp->next;
-//	}
-//	fclose(fp);
-//	fclose(gp);
-//
-//	sprintf(command, "$EDITOR %s", BRENAME_SCRIPT_PATH);
-//	system(command);
-//
-//	printf("do you want to run that script [yes/No]: ");
-//	fgets(input, NAME_MAX, stdin);
-//
-//	printf("%s\n", input);
-//	if (input[0] == 'y' || input[0] == 'Y') {
-//		system(BRENAME_SCRIPT_PATH);
-//		strncpy(status, "performed a bulk rename", NAME_MAX);
-//	}
-//
-//	/* finally clear the selection */
-//	clearselection(NULL);
-//	getcurrentfiles();
-//}
-
-
 void
 search(const Arg *arg)
 {
@@ -871,25 +853,7 @@ search(const Arg *arg)
 	int reti, oktofree = 0, i = current;
 
     switch (arg->i) {
-    case 0: endwin();
-    
-            printf("search: ");
-            fgets(pattern, PATH_MAX, stdin);
-            if (pattern[strlen(pattern)-1] == '\n') pattern[strlen(pattern)-1] = 0;
-            
-            strncpy(status, "searched with new pattern", NAME_MAX);
-            
-            if (pattern[0] != 0) {
-            	reti = regcomp(&regex, pattern, 0);
-             	if (reti) return;
-            	oktofree = 1;
-            } else {
-            	strncpy(status, "please input a pattern", NAME_MAX);
-            	initialization();
-             	return;
-            }
-            /* FALLTHROUGH */
-    
+    case 0: /* FALLTHROUGH */
     case 1: if (!oktofree && pattern[0] != 0) {
                 reti = regcomp(&regex, pattern, 0);
                  if (reti) return;
@@ -971,8 +935,9 @@ search(const Arg *arg)
 void
 executecommand(const Arg *arg)
 {
-	char input[NAME_MAX], inputcommand[PATH_MAX], command[COMMAND_MAX], toconcat[PATH_MAX];
-	int i, k = 0, j = 1;
+	char input[NAME_MAX], inputcommand[PATH_MAX], command[COMMAND_MAX], toconcat[PATH_MAX], coutput[PATH_MAX] = {0}, buf[PATH_MAX], oldpattern[PATH_MAX], chr;
+	int i, k = 0, j = 1, cpid, pipefd[2] = {0}, readok = 0, cstatus = 0;
+	Arg searcharg = {.i = 0};
 	
 	if (!(arg->i & NoEndWinMaskBACKEND)) endwin();
 
@@ -983,12 +948,6 @@ executecommand(const Arg *arg)
 	} else {
 		strncpy(inputcommand, *((char **)arg->v), PATH_MAX);
 	}
-
-	/* determine if in the input command i need to put the current file name, the whole selection or leave it like this
-	 * % means current file
-	 * %s means whole selection
-	 * %r means the ratio, followed by a 0 and then the current position (coming soon)
-	 */
 	
 	for (i = 0; inputcommand[i] != 0 && k < PATH_MAX - 1 && i < COMMAND_MAX; i++) {
 		if (inputcommand[i] == '%') {
@@ -997,7 +956,6 @@ executecommand(const Arg *arg)
 				k++;
 				i++;
 			} else if (inputcommand[i+1] == 'c') {
-				/* dropped %C which gave the fullpath -> it can be easily gotten through a shell command just like %p (current path) */
 				if (!fileslist.contents) {
 					strncpy(status, "directory is empty - no current file set", NAME_MAX);
 					goto skipexecutecommand;
@@ -1032,28 +990,72 @@ executecommand(const Arg *arg)
 	if (!(arg->i & NoConfirmationMask)) fgets(input, NAME_MAX, stdin);
 
 	if (arg->i & NoConfirmationMask || input[0] == 'y' || input[0] == 'Y') {
-		system(command);
-		if (!(arg->i & NoEndWinMaskBACKEND)) snprintf(status, NAME_MAX, "executed the command '%s'", command);
+		if (pipe(pipefd) != 0) {
+			snprintf(status, NAME_MAX, "pipe error when trying to execute '%s'", command);
+			goto skipexecutecommand;
+		}
+
+		if ((cpid = fork()) == 0) {
+			dup2(pipefd[1], STDOUT_FILENO);
+			close(pipefd[0]);
+			close(pipefd[1]);
+
+			execl("/bin/sh", "sh", "-c", command, (char *)NULL);
+			_exit(1);
+		} else if (cpid > 0) {
+			close(pipefd[1]);
+
+			k = 0;
+			while (read(pipefd[0], &chr, sizeof(char)) > 0) {
+				putchar(chr);
+				fflush(stdout);
+
+				if (k == PATH_MAX-1 || chr == '\n') {
+					buf[k] = 0;
+					strncpy(coutput, buf, PATH_MAX);
+					readok = 1;
+					k = 0;
+				} else {
+					buf[k++] = chr;
+				}
+			}
+			buf[k] = 0;
+			if (k != 0) strncpy(coutput, buf, PATH_MAX);
+
+			if (wait(&cstatus) != cpid || cstatus != 0) {
+				snprintf(status, NAME_MAX, "error on wait or the child process exited with non-zero status when executing '%s'", command);
+				readok = 0;
+			}
+
+			close(pipefd[0]);
+		}
+
+		if (cpid < 0) snprintf(status, NAME_MAX, "error on fork() when trying to execute '%s'", command);
+		else if (!(arg->i & NoEndWinMaskBACKEND)) snprintf(status, NAME_MAX, "executed the command '%s'", command);
 	} else if (!(arg->i & NoEndWinMaskBACKEND)) {
 		snprintf(status, NAME_MAX, "didn't execute the command '%s'", command);
 	}
 
 skipexecutecommand:
-	if (!(arg->i & NoEndWinMaskBACKEND)) printf("press any key to continue\n");
-	if (!(arg->i & NoEndWinMaskBACKEND)) fgetc(stdin);
+	if (!(arg->i & NoEndWinMaskBACKEND) && !(arg->i & NoWaitUntilKeyPress)) printf("press any key to continue\n");
+	if (!(arg->i & NoEndWinMaskBACKEND) && !(arg->i & NoWaitUntilKeyPress)) fgetc(stdin);
 
 	if (!(arg->i & NoEndWinMaskBACKEND)) initialization();
 	if (!(arg->i & NoReloadMask)) getcurrentfiles();
 
-	if (arg->i & SearchLastLineMask) {
-	/* <++> */
+	if (readok && arg->i & SearchLastLineMask) {
+		strncpy(oldpattern, pattern, PATH_MAX);
+		strncpy(pattern, coutput, PATH_MAX);
+
+		search(&searcharg);
+		printf("%s\n", pattern);
+		if (arg->i & NoSaveSearchMask) strncpy(pattern, oldpattern, PATH_MAX);
 	}
 
 	if (arg->i & CdLastLineMask) {
-	/* <++> */
+		chdir(coutput);
 	}
 }
-
 
 /* main */
 int

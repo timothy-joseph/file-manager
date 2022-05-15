@@ -1,7 +1,10 @@
 #define QUIT_CHAR 'q'
-/* TODO: use /tmp for these */
-#define BRENAME_SCRIPT_PATH "/home/joseph/.cache/stuifm_brename.sh"
-#define BRENAME_TXT_PATH "/home/joseph/.cache/stuifm_brename.txt"
+/* TODO: make script for bulk rename */
+/* TODO: make preview script */
+/* TODO: make opener script */
+/* TODO: make bookmark script */
+/* TODO: add something to the executecommand function to restore the current file or the position closest to it */
+/* TODO: use /tmp for this */
 #define VCD_PATH "/home/joseph/.vcd"
 
 #define SELECTEDCOLOR  COLOR_RED
@@ -30,6 +33,7 @@ static const int drawratios[][COLUMNS_MAX] = {
  * CdLastLineMask -> chdir to the last line of the output of the command
  * SearchLastLineMask -> searches using the pattern showed on the last line of the output of the command
  * NoSaveSearchMask -> doesn't save the pattern used with the SearchLastLineMask
+ * NoWaitUntilKeyPress -> doesn't request a keypress before restarting the window
  *
  * if the NoEndWin mask includes the NoConfirmationMask because you can't ask for input
  * i'm considering removing the confirmation part of the code becuase you can make your scripts ask for the confirmation
@@ -43,12 +47,16 @@ static const int drawratios[][COLUMNS_MAX] = {
  * the format characters are:
  * %c -> the current file -> echo %c becomes echo currentname
  * %s -> the files in the selection with their full path -> echo %s becomes echo /path/to/file1 /path/to/file2
+ * %r -> the ratio, followed by a 0 then the current file
  * %% put a single %
  */
-static const char *renamecommand[] = {"printf \"rename %%s: \" \"%c\"; read ans; mv -i -v %c $ans; echo $ans"};
+
+/* for the following commands, you can make something more fancy with dmenu such as have a history of searches using dmenu */
+static const char *renamecommand[] = {"printf \"rename %%s: \" \"%c\"; read ans; mv -i -v %c $ans; printf \"\n$ans\""};
 static const char *yankcommand[] = {"printf \"yank selection[y/N]: \"; read ans; [ $ans = \"y\" ] && cp -r -i -v %s $(pwd); echo %c"};
 static const char *movecommand[] = {"printf \"move selection[y/N]: \"; read ans; [ $ans = \"y\" ] && mv -i -v %s $(pwd); echo %c"};
 static const char *trashputcommand[] = {"printf \"put to trash selection[y/N]: \"; read ans; [ $ans = \"y\" ] && trash-put %s; echo %c"};
+static const char *searchcommand[] = {"printf \"search: \"; read ans; printf \"\n$ans\""};
 
 /* TODO: make a list of commands to autostart, a list of commands to run before every event (not just defined events) and after every event. by event i mean keypress */
 /* TODO: bookmark script */
@@ -97,10 +105,9 @@ static Key keys[] = {
     {'d',            clearselection,        {0}      }, /* in order to clear the selection after copy - might consider making this a mask */
     {'D',            executecommand,        {.v = trashputcommand, .i=NoConfirmationMask|SearchLastLineMask|NoSaveSearchMask}},
     {'d',            clearselection,        {0}      }, /* in order to clear the selection after copy - might consider making this a mask */
-    //{'b',            brename,               {0}      }, /* TODO: replace brename with a shellscript */
     
     /* searching */
-    {'/',            search,                {.i = 0} },
+    {'/',            executecommand,        {.v = searchcommand, .i = NoConfirmationMask|SearchLastLineMask|NoWaitUntilKeyPress}},
     {'n',            search,                {.i = +1}},
     {'N',            search,                {.i = -1}},
     
